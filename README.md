@@ -10,7 +10,7 @@
 - **脚本**：训练、play（键盘控制 / 实时可视化 / 速度轨迹录制）、环境列表
 - **预训练模型**：`pretrained/` 下的示例权重
 
-## Reference Environment（参考环境）
+## Reference Environment
 
 | 环境 | 版本 |
 | --- | --- |
@@ -29,7 +29,7 @@
 
 建议先浏览 Isaac Lab 官方教程。
 
-### 3. 本仓库安装
+### 3. Repo Installation
 
 建议在 conda 环境中安装，运行仓库脚本 / 导入模块 / 排查依赖前先 `conda activate <env>`。
 
@@ -43,13 +43,13 @@ python -m pip install -e source/agent_rl -i https://pypi.tuna.tsinghua.edu.cn/si
 
 ## Usage
 
-### 列出已注册的 RL 任务
+### List RL tasks
 
 ```bash
 python scripts/list_envs.py
 ```
 
-### 可视化任务环境
+### Environment visualisation
 
 ```bash
 python scripts/view_robot.py --task=<task_name> --num_envs=1 --device=cpu
@@ -58,7 +58,7 @@ python scripts/view_robot.py --task=<task_name> --num_envs=1 --device=cpu
 python scripts/view_robot.py --task=Robotics-Wheelbipe-V14-Rough-Play-v0 --num_envs=1
 ```
 
-### 训练
+### Train
 
 ```bash
 python scripts/rsl_rl/train.py --task=<task_name> --num_envs=4096 --max_iterations=20000 --device=cuda:0 --headless
@@ -80,7 +80,7 @@ python scripts/rsl_rl/play.py --task=<task_name> --num_envs=1 --checkpoint=<mode
 python scripts/rsl_rl/play.py --task=Robotics-Wheelbipe-V14-Rough-Play-v0 --num_envs=1 --checkpoint=<model_path> --keyboard
 ```
 
-### 录制 V14 rough 速度/reward 轨迹
+### Record V14 rough speed/reward curves
 
 `WheelbipeV14RoughEnvCfg_v1_Play` 中已启用 `velocity_trace_cfg`，会在 play 时自动选择指定地形中的一个 agent，记录速度、高度和当前配置下的 reward contribution，并导出 CSV 与交互式 HTML。
 
@@ -118,19 +118,19 @@ python scripts/utils/export_velocity_trace_html.py \
 
 高度观测可选裁剪，默认关闭，配置项为 `height_obs_clip_enabled` 和 `height_obs_clip_range`。更多实现说明见 `scripts/utils/velocity_trace_html.py` 与 `WheelbipeV14RoughEnvCfg_v1_Play.velocity_trace_cfg`。
 
-## Available Tasks（可用任务）
+## Available Tasks
 
 | 任务 | 说明 |
 | --- | --- |
 | `Robotics-Wheelbipe-V14-Flat-v0` | 平地 PPO |
-| `Robotics-Wheelbipe-V14-Flat-v1` | 平地 PPO 变体 |
-| `Robotics-Wheelbipe-V14-Flat-v2` | 平地 PPO 变体 |
+| `Robotics-Wheelbipe-V14-Flat-v1` | 平地 PPO + 落地预训练 |
+| `Robotics-Wheelbipe-V14-Flat-v2` | 平地 PPO + 小陀螺平移 |
 | `Robotics-Wheelbipe-V14-Flat-Play-v0` | 平地 PPO Play |
-| `Robotics-Wheelbipe-V14-Flat-Play-v2` | 平地 PPO Play 变体 |
-| `Robotics-Wheelbipe-V14-Rough-v0` | 粗糙地形 PPO |
-| `Robotics-Wheelbipe-V14-Rough-v1` | 粗糙地形 PPO 变体（含 velocity trace） |
-| `Robotics-Wheelbipe-V14-Rough-Play-v0` | 粗糙地形 PPO Play |
-| `Robotics-Wheelbipe-V14-Rough-Play-v1` | 粗糙地形 PPO Play（velocity trace） |
+| `Robotics-Wheelbipe-V14-Flat-Play-v2` | 平地 PPO + 小陀螺平移 Play |
+| `Robotics-Wheelbipe-V14-Rough-v0` | 粗糙地形 PPO + 小陀螺 |
+| `Robotics-Wheelbipe-V14-Rough-v1` | 粗糙地形 PPO + 跑场 |
+| `Robotics-Wheelbipe-V14-Rough-Play-v0` | 粗糙地形 PPO + 小陀螺 Play |
+| `Robotics-Wheelbipe-V14-Rough-Play-v1` | 粗糙地形 PPO + 跑场 Play |
 | `Robotics-Wheelbipe-V14-Flat-DreamWaQ-v0` | 平地 DreamWaQ |
 | `Robotics-Wheelbipe-V14-Flat-DreamWaQ-Play-v0` | 平地 DreamWaQ Play |
 | `Robotics-Wheelbipe-V14-Flat-HIM-v0` | 平地 HIMLoco（HIM） |
@@ -138,23 +138,21 @@ python scripts/utils/export_velocity_trace_html.py \
 | `Robotics-Wheelbipe-V14-Flat-NP3OBarlow-v0` | 平地 NP3O（BarlowTwins） |
 | `Robotics-Wheelbipe-V14-Flat-NP3OBarlow-Play-v0` | 平地 NP3O Play |
 
-维护说明：V14 无 `guide_*`，包含 `gimbal_yaw_*` / `gimbal_pitch_*`，任务内部会持续将 gimbal 维持在零位。
+## Algorithms
 
-## Algorithms（算法）
-
-- **PPO**（普通）：`source/agent_rl/agent_rl/rsl_rl/`
+- **PPO**（common）：`source/agent_rl/agent_rl/rsl_rl/`
 - **DreamWaQ**：`algorithms/ppo_dreamwaq.py` + `modules/actor_critic_dreamwaq.py` + `runners/on_policy_runner_dreamwaq.py`
 - **HIMLoco（HIM）**：`algorithms/ppo_him.py` + `modules/actor_critic_him.py` + `modules/him_estimator.py`
 - **NP3O（BarlowTwins）**：`algorithms/np3o.py` + `modules/actor_critic_balowtwins.py`
 
-## State Machines（状态机）
+## State Machines
 
 位于 `source/agent_tasks/agent_tasks/direct/wheelbipe/state_machines/`，由 `manager/mdp/state_machine/` 驱动：
 
 - **腾空-落地状态机**：`airborne.py` / `jump_takeoff.py` / `step_up.py` / `stair.py`
 - **小陀螺平移模式**：平移状态下保持自旋、移动稳定
 
-## Pretrained Examples（预训练模型）
+## Pretrained Examples
 
 `pretrained/` 下提供示例权重（模型文件为 `.pt`，用 `torch.load` 可查看结构）。26 赛季机器人的预训练模型位于 `pretrained/26_infantry/`：
 
@@ -166,12 +164,27 @@ python scripts/rsl_rl/play.py --task=Robotics-Wheelbipe-V14-Flat-Play-v0 --num_e
 python scripts/view_robot.py --task=Robotics-Wheelbipe-V14-Rough-Play-v0 --num_envs=1
 ```
 
-## License
+## Citation
 
-本仓库**自研部分**（任务、状态机、脚本、预训练模型等）以 [MIT](./LICENSE) 授权（Copyright (c) 2026 SCUTRobotLab）。
+If you find this project useful in your research, please consider citing:
 
-`source/agent_rl/agent_rl/rsl_rl/` 下的算法模块派生/移植自第三方开源项目，遵循各自上游协议，详见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)：
+```
+@software{wheeled_legged_rl2026,
+  author = {Zhang, Zhirui and Cui, Yu},
+  title = {wheeled-legged_RL: Reinforcement Learning for Wheeled-legged Robots},
+  url = {https://github.com/scutrobotlab/wheeled-legged_RL},
+  year = {2026}
+}
+```
 
-- **HIMLoco**（`algorithms/ppo_him.py`、`modules/actor_critic_him.py`、`modules/him_estimator.py`、`runners/on_policy_runner_him.py`）：CC BY-NC-SA 4.0，**禁止商业用途**、衍生作品须以相同协议授权；
-- **DreamWaQ**（`algorithms/ppo_dreamwaq.py` 等）：上游未声明明确许可协议，仅作学术引用与致谢；
-- **ddt_rl_isaacgym / NP3O**（`algorithms/np3o.py` 等）：上游未声明明确许可协议，仅作学术引用与致谢。
+## Acknowledgements
+
+This project uses or derives from the following open-source projects. We are grateful to their authors. License terms of third-party code are listed in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+
+- [Isaac Sim](https://developer.nvidia.com/isaac-sim)
+- [Isaac Lab](https://github.com/isaac-sim/IsaacLab)
+- [rsl_rl](https://github.com/leggedrobotics/rsl_rl)
+- [legged_gym](https://github.com/leggedrobotics/legged_gym)
+- [HIMLoco](https://github.com/InternRobotics/HIMLoco)
+- [DreamWaQ](https://github.com/Manaro-Alpha/DreamWaQ)
+- [ddt_rl_isaacgym](https://github.com/DDTRobot/ddt_rl_isaacgym)
