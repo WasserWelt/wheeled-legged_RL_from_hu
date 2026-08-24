@@ -1,6 +1,6 @@
 # wheeled-legged_RL
 
-26 赛季轮腿步兵强化学习训练仓库（开源版）。基于 **Isaac Sim + Isaac Lab + RSL-RL** 的四轮轮腿（wheelbipe）机器人强化学习训练与部署代码。
+26 赛季轮腿步兵强化学习训练仓库。基于 **Isaac Sim + Isaac Lab + RSL-RL** 的轮腿（wheelbipe）机器人强化学习训练代码。
 
 包含：
 
@@ -12,7 +12,7 @@
 
 ## Features
 
-本软件面向四轮轮腿（wheelbipe）机器人的强化学习训练与部署，主要功能：
+本软件面向轮腿（wheelbipe）机器人的强化学习训练与部署，主要功能：
 
 - **多任务训练**：Wheelbipe V14 系列平地 / 粗糙地形训练与 Play 任务（见 [Available Tasks](#available-tasks)）。
 - **多种 RL 算法**：内置 PPO、DreamWaQ（隐式地形想象）、HIMLoco（历史轨迹估计）、NP3O（BarlowTwins + 安全约束）。
