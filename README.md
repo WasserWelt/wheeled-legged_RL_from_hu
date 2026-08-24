@@ -10,12 +10,44 @@
 - **脚本**：训练、play（键盘控制 / 实时可视化 / 速度轨迹录制）、环境列表
 - **预训练模型**：`pretrained/` 下的示例权重
 
-## Reference Environment
+## Features
+
+本软件面向四轮轮腿（wheelbipe）机器人的强化学习训练与部署，主要功能：
+
+- **多任务训练**：Wheelbipe V14 系列平地 / 粗糙地形训练与 Play 任务（见 [Available Tasks](#available-tasks)）。
+- **多种 RL 算法**：内置 PPO、DreamWaQ（隐式地形想象）、HIMLoco（历史轨迹估计）、NP3O（BarlowTwins + 安全约束）。
+- **状态机**：腾空-落地状态机（airborne / jump_takeoff / step_up / stair）与小陀螺平移模式。
+- **训练 / 推理脚本**：一键训练（`train.py`）、键盘控制 play（`play.py --keyboard`）、实时可视化（`--plot`）。
+- **效果分析**：速度 / reward 轨迹录制，导出 CSV 与交互式 HTML。
+- **部署导出**：策略导出为 TorchScript（`.pt`）/ ONNX，便于实机部署。
+- **预训练模型**：`pretrained/` 下提供示例权重。
+
+## Environment & Dependencies
+
+### 软件环境
 
 | 环境 | 版本 |
 | --- | --- |
 | Ubuntu 22.04 | Isaac Sim 4.5 / Isaac Lab 2.1.0 |
 | Ubuntu 24.04 | Isaac Sim 5.1 / Isaac Lab 2.3.x |
+| Python | 3.11 |
+| PyTorch | 2.7.0+cu128 |
+| CUDA | 12.8 |
+
+### 硬件环境（实测）
+
+| 硬件 | 规格 |
+| --- | --- |
+| GPU | NVIDIA GeForce RTX 5070 Ti（16 GB 显存） |
+| CPU | AMD Ryzen 5 9600X |
+
+> 最低要求：支持 CUDA 的 NVIDIA GPU（≥ 8 GB 显存）。
+
+### 依赖仓库
+
+- [Isaac Lab](https://github.com/isaac-sim/IsaacLab)
+- [RSL-RL](https://github.com/leggedrobotics/rsl_rl)
+- 本仓库 `source/agent_world`、`source/agent_tasks`、`source/agent_rl`（可编辑安装）
 
 ## Installations
 
@@ -163,6 +195,128 @@ python scripts/rsl_rl/play.py --task=Robotics-Wheelbipe-V14-Flat-Play-v0 --num_e
 # V14 rough play 查看
 python scripts/view_robot.py --task=Robotics-Wheelbipe-V14-Rough-Play-v0 --num_envs=1
 ```
+
+## Project Structure
+
+```
+wheeled-legged_RL/
+├── source/
+│   ├── agent_world/                 # 机器人资产、地形、执行器
+│   │   └── agent_world/
+│   │       ├── actuators/           # 执行器（M3508、差速、学习速度）
+│   │       ├── assets/              # 机器人描述（wheelbipe V13 / V14 / 25_v3）
+│   │       └── terrains/            # 地形生成（高度场）
+│   ├── agent_tasks/                 # 环境与任务定义
+│   │   └── agent_tasks/
+│   │       ├── direct/wheelbipe/    # wheelbipe 任务
+│   │       │   ├── agents/          # RSL-RL PPO 配置
+│   │       │   ├── state_machines/  # 状态机（airborne / jump / step_up / stair）
+│   │       │   └── wheelbipe_V14/   # V14 任务（env / env_cfg / cfg_utils）
+│   │       └── manager/mdp/         # 观测 / 奖励 / 事件 + 状态机 + 地形管理器
+│   └── agent_rl/                    # RL 算法与 runner
+│       └── agent_rl/rsl_rl/
+│           ├── algorithms/          # PPO / DreamWaQ / HIM / NP3O
+│           ├── modules/             # actor-critic、估计器、VQ-VAE、policy
+│           ├── runners/             # on-policy runner（含各算法变体）
+│           ├── storage/             # rollout 存储
+│           └── env/                 # 向量化环境封装
+├── scripts/                         # 训练 / play / 可视化脚本
+│   ├── rsl_rl/                      # train.py / play.py / cli_args / keyboard_controller
+│   └── utils/                       # 速度轨迹可视化、实时绘图
+├── pretrained/                      # 预训练模型权重
+├── logs/                            # 训练日志、checkpoint、导出模型
+├── THIRD_PARTY_NOTICES.md           # 第三方代码许可声明
+└── LICENSE                          # MIT 许可证
+```
+
+| 目录 / 文件 | 用途 |
+| --- | --- |
+| `source/agent_world` | 机器人资产、地形生成器、执行器（Isaac Lab 世界层） |
+| `source/agent_tasks` | 环境与任务定义、奖励函数、状态机、地形管理器 |
+| `source/agent_rl` | RL 算法（PPO / DreamWaQ / HIM / NP3O）、runner、网络模块 |
+| `scripts/rsl_rl/` | 训练与 play 入口脚本 |
+| `scripts/utils/` | 速度轨迹可视化、实时绘图 |
+| `pretrained/` | 预训练模型与参数 |
+| `logs/` | 训练日志、checkpoint、导出的策略 |
+
+## System Architecture & Data Flow
+
+### 软硬件系统框图
+
+```mermaid
+flowchart TB
+    subgraph HW["机器人硬件"]
+        ACT["轮 / 腿执行器"]
+        SENS["IMU / 编码器"]
+        CTRL["控制器 / 上位机"]
+    end
+
+    subgraph TRAIN["仿真训练"]
+        SIM["Isaac Sim"] --> ENV["Isaac Lab 环境（agent_tasks）"]
+        ENV <--> ALG["RL 算法（agent_rl）"]
+        ALG --> CKPT["策略权重（.pt）"]
+    end
+
+    subgraph DEPLOY["实机部署"]
+        CKPT --> INF["推理（.pt / .onnx）"]
+        INF --> CTRL
+        CTRL --> ACT
+        SENS --> CTRL
+    end
+```
+
+### 训练数据流
+
+```mermaid
+flowchart LR
+    OBS["观测 obs"] --> POL["策略网络 policy"]
+    POL --> A["动作 action"]
+    A --> E["环境 / 机器人"]
+    E --> R["奖励 reward"]
+    R --> BUF["Rollout 存储"]
+    BUF --> UPD["PPO 更新"]
+    UPD --> POL
+```
+
+## Software Architecture
+
+```mermaid
+flowchart TB
+    subgraph APP["应用层"]
+        TRAIN["train.py"]
+        PLAY["play.py"]
+    end
+    subgraph ALG2["算法层"]
+        PPO["PPO / DreamWaQ / HIM / NP3O"]
+        RUN["OnPolicyRunner"]
+        MOD["actor-critic / 估计器"]
+    end
+    subgraph ENV3["环境层"]
+        TASK["agent_tasks：任务 / 状态机"]
+        WORLD["agent_world：资产 / 地形 / 执行器"]
+    end
+    subgraph BASE["基础设施层"]
+        ISL["Isaac Lab"]
+        ISS["Isaac Sim"]
+    end
+    TRAIN --> PPO
+    PLAY --> RUN
+    PPO --> RUN
+    RUN --> MOD
+    RUN --> TASK
+    TASK --> WORLD
+    WORLD --> ISL
+    ISL --> ISS
+```
+
+## RoadMap
+
+- [ ] Sim2Real 实机部署与调参（域随机化、系统辨识）
+- [ ] 支持更多地形与任务（斜坡、楼梯、复杂粗糙地形）
+- [ ] 更多 RL 算法与基线（PPO 变体、RMA 等）
+- [ ] 训练性能优化（多 GPU、混合精度）
+- [ ] 自动化评测与报告（定量指标、可视化）
+- [ ] 文档与教程完善（原理详解、视频演示）
 
 ## Citation
 
