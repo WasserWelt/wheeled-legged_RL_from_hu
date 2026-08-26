@@ -26,20 +26,20 @@
 
 ### 软件环境
 
-| 环境 | 版本 |
-| --- | --- |
+| 环境         | 版本                            |
+| ------------ | ------------------------------- |
 | Ubuntu 22.04 | Isaac Sim 4.5 / Isaac Lab 2.1.0 |
 | Ubuntu 24.04 | Isaac Sim 5.1 / Isaac Lab 2.3.x |
-| Python | 3.11 |
-| PyTorch | 2.7.0+cu128 |
-| CUDA | 12.8 |
+| Python       | 3.11                            |
+| PyTorch      | 2.7.0+cu128                     |
+| CUDA         | 12.8                            |
 
 ### 硬件环境（实测）
 
-| 硬件 | 规格 |
-| --- | --- |
-| GPU | NVIDIA GeForce RTX 5070 Ti（16 GB 显存） |
-| CPU | AMD Ryzen 5 9600X |
+| 硬件 | 规格                                     |
+| ---- | ---------------------------------------- |
+| GPU  | NVIDIA GeForce RTX 5070 Ti（16 GB 显存） |
+| CPU  | AMD Ryzen 5 9600X                        |
 
 > 最低要求：支持 CUDA 的 NVIDIA GPU（≥ 8 GB 显存）。
 
@@ -152,23 +152,23 @@ python scripts/utils/export_velocity_trace_html.py \
 
 ## Available Tasks
 
-| 任务 | 说明 |
-| --- | --- |
-| `Robotics-Wheelbipe-V14-Flat-v0` | 平地 PPO |
-| `Robotics-Wheelbipe-V14-Flat-v1` | 平地 PPO + 落地预训练 |
-| `Robotics-Wheelbipe-V14-Flat-v2` | 平地 PPO + 小陀螺平移 |
-| `Robotics-Wheelbipe-V14-Flat-Play-v0` | 平地 PPO Play |
-| `Robotics-Wheelbipe-V14-Flat-Play-v2` | 平地 PPO + 小陀螺平移 Play |
-| `Robotics-Wheelbipe-V14-Rough-v0` | 粗糙地形 PPO + 小陀螺 |
-| `Robotics-Wheelbipe-V14-Rough-v1` | 粗糙地形 PPO + 跑场 |
-| `Robotics-Wheelbipe-V14-Rough-Play-v0` | 粗糙地形 PPO + 小陀螺 Play |
-| `Robotics-Wheelbipe-V14-Rough-Play-v1` | 粗糙地形 PPO + 跑场 Play |
-| `Robotics-Wheelbipe-V14-Flat-DreamWaQ-v0` | 平地 DreamWaQ |
-| `Robotics-Wheelbipe-V14-Flat-DreamWaQ-Play-v0` | 平地 DreamWaQ Play |
-| `Robotics-Wheelbipe-V14-Flat-HIM-v0` | 平地 HIMLoco（HIM） |
-| `Robotics-Wheelbipe-V14-Flat-HIM-Play-v0` | 平地 HIMLoco Play |
-| `Robotics-Wheelbipe-V14-Flat-NP3OBarlow-v0` | 平地 NP3O（BarlowTwins） |
-| `Robotics-Wheelbipe-V14-Flat-NP3OBarlow-Play-v0` | 平地 NP3O Play |
+| 任务                                               | 说明                       |
+| -------------------------------------------------- | -------------------------- |
+| `Robotics-Wheelbipe-V14-Flat-v0`                 | 平地 PPO                   |
+| `Robotics-Wheelbipe-V14-Flat-v1`                 | 平地 PPO + 落地预训练      |
+| `Robotics-Wheelbipe-V14-Flat-v2`                 | 平地 PPO + 小陀螺平移      |
+| `Robotics-Wheelbipe-V14-Flat-Play-v0`            | 平地 PPO Play              |
+| `Robotics-Wheelbipe-V14-Flat-Play-v2`            | 平地 PPO + 小陀螺平移 Play |
+| `Robotics-Wheelbipe-V14-Rough-v0`                | 粗糙地形 PPO + 小陀螺      |
+| `Robotics-Wheelbipe-V14-Rough-v1`                | 粗糙地形 PPO + 跑场        |
+| `Robotics-Wheelbipe-V14-Rough-Play-v0`           | 粗糙地形 PPO + 小陀螺 Play |
+| `Robotics-Wheelbipe-V14-Rough-Play-v1`           | 粗糙地形 PPO + 跑场 Play   |
+| `Robotics-Wheelbipe-V14-Flat-DreamWaQ-v0`        | 平地 DreamWaQ              |
+| `Robotics-Wheelbipe-V14-Flat-DreamWaQ-Play-v0`   | 平地 DreamWaQ Play         |
+| `Robotics-Wheelbipe-V14-Flat-HIM-v0`             | 平地 HIMLoco（HIM）        |
+| `Robotics-Wheelbipe-V14-Flat-HIM-Play-v0`        | 平地 HIMLoco Play          |
+| `Robotics-Wheelbipe-V14-Flat-NP3OBarlow-v0`      | 平地 NP3O（BarlowTwins）   |
+| `Robotics-Wheelbipe-V14-Flat-NP3OBarlow-Play-v0` | 平地 NP3O Play             |
 
 ## Algorithms
 
@@ -229,15 +229,15 @@ wheeled-legged_RL/
 └── LICENSE                          # MIT 许可证
 ```
 
-| 目录 / 文件 | 用途 |
-| --- | --- |
-| `source/agent_world` | 机器人资产、地形生成器、执行器（Isaac Lab 世界层） |
-| `source/agent_tasks` | 环境与任务定义、奖励函数、状态机、地形管理器 |
-| `source/agent_rl` | RL 算法（PPO / DreamWaQ / HIM / NP3O）、runner、网络模块 |
-| `scripts/rsl_rl/` | 训练与 play 入口脚本 |
-| `scripts/utils/` | 速度轨迹可视化、实时绘图 |
-| `pretrained/` | 预训练模型与参数 |
-| `logs/` | 训练日志、checkpoint、导出的策略 |
+| 目录 / 文件            | 用途                                                     |
+| ---------------------- | -------------------------------------------------------- |
+| `source/agent_world` | 机器人资产、地形生成器、执行器（Isaac Lab 世界层）       |
+| `source/agent_tasks` | 环境与任务定义、奖励函数、状态机、地形管理器             |
+| `source/agent_rl`    | RL 算法（PPO / DreamWaQ / HIM / NP3O）、runner、网络模块 |
+| `scripts/rsl_rl/`    | 训练与 play 入口脚本                                     |
+| `scripts/utils/`     | 速度轨迹可视化、实时绘图                                 |
+| `pretrained/`        | 预训练模型与参数                                         |
+| `logs/`              | 训练日志、checkpoint、导出的策略                         |
 
 ## System Architecture & Data Flow
 
