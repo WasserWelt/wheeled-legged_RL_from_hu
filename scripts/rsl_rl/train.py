@@ -16,7 +16,12 @@
 
 import argparse
 import inspect
+import os
 import sys
+
+# 添加仓库根目录到路径：任务环境代码里有 `import scripts.utils.velocity_trace_html`，
+# 直接以脚本文件方式启动时 cwd 不会自动进入 sys.path，需显式加入根目录。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from isaaclab.app import AppLauncher
 

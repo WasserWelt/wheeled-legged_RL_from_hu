@@ -106,6 +106,9 @@ from isaaclab.envs import DirectMARLEnv, multi_agent_to_single_agent
 import sys
 # 添加当前目录到路径，以便导入同目录下的模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# 添加仓库根目录到路径：任务环境代码里有 `import scripts.utils.velocity_trace_html`，
+# 直接以脚本文件方式启动时 cwd 不会自动进入 sys.path，需显式加入根目录。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from keyboard_controller import Se3KeyboardMobile, Se3KeyboardMobileCfg
 
 try:
