@@ -46,19 +46,16 @@ WYW_CRITIC_DIM = 46             # 拼 latent 前的特权观测维（见文件�
 WYW_LATENT_DIM = 3              # encoder latent（隐式基座线速度估计）
 
 # ---------------------------------------------------------------------------- #
-# 观测缩放（对齐 fudan obs_scales）
-# ---------------------------------------------------------------------------- #
-WYW_ANG_VEL_SCALE = 0.25        # 机身角速度
-WYW_DOF_VEL_SCALE = 0.05        # 关节速度
-WYW_LIN_VEL_SCALE = 2.0         # 基座线速度（命令 vx + critic base_lin_vel）
-WYW_CMD_ANG_VEL_SCALE = 0.25    # 偏航速度命令
-WYW_HEIGHT_CMD_SCALE = 1.0      # 高度命令
-WYW_PROJ_GRAVITY_SCALE = 1.0
-WYW_JOINT_POS_SCALE = 1.0
-WYW_ACTION_SCALE = 1.0
-WYW_JOINT_ACC_SCALE = 0.0025    # critic 专用，抑制量级
-WYW_TORQUE_SCALE = 0.05         # critic 专用
-
+# 观测缩放（obs_scales）**不在此文件**。
+#
+# 按 IsaacLab DirectRLEnv 与本仓库基类（wheelbipe25_v3/env_cfg.py 的 lin_vel_scale /
+# ang_vel_scale / ... 字段）的惯例，所有 obs 缩放作为 **configclass 字段** 定义在
+# ``env_cfg.py`` 的 ``WheelbipeWywFlatEnvCfg`` 上（``wyw_*_scale``），好处：
+#   1) 随 ``params/env.yaml`` 自动落盘，便于复现 / 审计 / 对齐部署端；
+#   2) 可按任务覆写（如 Jump 把 ``wyw_lin_vel_scale`` 从 2.0 改成 3.0）；
+#   3) 与基类 / IsaacLab 编码风格一致（scale 是配置，不是几何常量）。
+# 本文件只保留：网络/观测**维度**、**几何**目标（L0、滞空高度）、物理**阈值**、跳跃**奖励权重**。
+#
 # ---------------------------------------------------------------------------- #
 # 跳跃（jump）几何常量：随本体切换
 #   L0 = 腿长 = ||wheel_pos_heading_b||（每条腿轮心到基座在随航向水平系下的距离）

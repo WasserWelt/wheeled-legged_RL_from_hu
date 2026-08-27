@@ -23,7 +23,10 @@ import gymnasium as gym
 
 from agent_tasks.direct.wheelbipe import agents
 
-_RUNNER = f"{agents.__name__}.rsl_rl_ppo_cfg:WheelbipeWywPPORunnerCfg"
+# 三任务共享超参，仅日志目录（experiment_name）分开，便于区分 checkpoint/曲线
+_RUNNER_FLAT = f"{agents.__name__}.rsl_rl_ppo_cfg:WheelbipeWywPPORunnerCfg"
+_RUNNER_ROUGH = f"{agents.__name__}.rsl_rl_ppo_cfg:WheelbipeWywRoughPPORunnerCfg"
+_RUNNER_JUMP = f"{agents.__name__}.rsl_rl_ppo_cfg:WheelbipeWywJumpPPORunnerCfg"
 
 
 gym.register(
@@ -32,7 +35,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.env_cfg:WheelbipeWywFlatEnvCfg",
-        "rsl_rl_cfg_entry_point": _RUNNER,
+        "rsl_rl_cfg_entry_point": _RUNNER_FLAT,
     },
 )
 
@@ -42,7 +45,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.env_cfg:WheelbipeWywFlatEnvCfg_Play",
-        "rsl_rl_cfg_entry_point": _RUNNER,
+        "rsl_rl_cfg_entry_point": _RUNNER_FLAT,
     },
 )
 
@@ -52,7 +55,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.env_cfg:WheelbipeWywRoughEnvCfg",
-        "rsl_rl_cfg_entry_point": _RUNNER,
+        "rsl_rl_cfg_entry_point": _RUNNER_ROUGH,
     },
 )
 
@@ -62,7 +65,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.env_cfg:WheelbipeWywRoughEnvCfg_Play",
-        "rsl_rl_cfg_entry_point": _RUNNER,
+        "rsl_rl_cfg_entry_point": _RUNNER_ROUGH,
     },
 )
 
@@ -72,7 +75,7 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.env_cfg:WheelbipeWywJumpEnvCfg",
-        "rsl_rl_cfg_entry_point": _RUNNER,
+        "rsl_rl_cfg_entry_point": _RUNNER_JUMP,
     },
 )
 
@@ -82,6 +85,6 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.env_cfg:WheelbipeWywJumpEnvCfg_Play",
-        "rsl_rl_cfg_entry_point": _RUNNER,
+        "rsl_rl_cfg_entry_point": _RUNNER_JUMP,
     },
 )

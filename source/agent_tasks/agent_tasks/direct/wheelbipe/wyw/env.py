@@ -68,9 +68,9 @@ class WheelbipeWywEnv(WheelbipeV14Env):
     # ------------------------------------------------------------------ #
     def _get_wyw_command_block(self) -> torch.Tensor:
         """命令块 [vx, yaw_rate, height]，各自缩放。"""
-        vx = self.command[:, 0:1] * C.WYW_LIN_VEL_SCALE
-        yaw = self.command[:, 2:3] * C.WYW_CMD_ANG_VEL_SCALE
-        height = self._get_observation_height_cmd().unsqueeze(-1) * C.WYW_HEIGHT_CMD_SCALE
+        vx = self.command[:, 0:1] * self.cfg.wyw_lin_vel_scale
+        yaw = self.command[:, 2:3] * self.cfg.wyw_cmd_ang_vel_scale
+        height = self._get_observation_height_cmd().unsqueeze(-1) * self.cfg.wyw_height_cmd_scale
         return torch.cat([vx, yaw, height], dim=-1)
 
     def _build_wyw_policy_obs(self) -> torch.Tensor:
@@ -79,12 +79,12 @@ class WheelbipeWywEnv(WheelbipeV14Env):
         cmd = self._get_wyw_command_block()
         obs = torch.cat(
             [
-                self.obs_root_ang_vel_b * C.WYW_ANG_VEL_SCALE,               # 3
-                self.obs_projected_gravity_b * C.WYW_PROJ_GRAVITY_SCALE,     # 3
+                self.obs_root_ang_vel_b * self.cfg.wyw_ang_vel_scale,        # 3
+                self.obs_projected_gravity_b * self.cfg.wyw_proj_gravity_scale,  # 3
                 cmd,                                                         # 3
-                self.obs_joint_pos[:, :leg] * C.WYW_JOINT_POS_SCALE,         # 4
-                self.obs_joint_vel * C.WYW_DOF_VEL_SCALE,                    # 6
-                self._actions * C.WYW_ACTION_SCALE,                          # 6
+                self.obs_joint_pos[:, :leg] * self.cfg.wyw_joint_pos_scale,  # 4
+                self.obs_joint_vel * self.cfg.wyw_dof_vel_scale,             # 6
+                self._actions * self.cfg.wyw_action_scale,                   # 6
             ],
             dim=-1,
         )
@@ -100,16 +100,16 @@ class WheelbipeWywEnv(WheelbipeV14Env):
         torque = self.robot.data.applied_torque[:, self._actuate_idx]
         critic = torch.cat(
             [
-                self.robot.data.root_lin_vel_b * C.WYW_LIN_VEL_SCALE,        # 3  (encoder 监督目标)
-                self.robot.data.root_ang_vel_b * C.WYW_ANG_VEL_SCALE,        # 3
-                self.robot.data.projected_gravity_b * C.WYW_PROJ_GRAVITY_SCALE,  # 3
+                self.robot.data.root_lin_vel_b * self.cfg.wyw_lin_vel_scale,     # 3  (encoder 监督目标)
+                self.robot.data.root_ang_vel_b * self.cfg.wyw_ang_vel_scale,     # 3
+                self.robot.data.projected_gravity_b * self.cfg.wyw_proj_gravity_scale,  # 3
                 cmd,                                                         # 3
-                leg_pos_dev * C.WYW_JOINT_POS_SCALE,                         # 4
-                dof_vel * C.WYW_DOF_VEL_SCALE,                               # 6
-                self._actions * C.WYW_ACTION_SCALE,                          # 6
-                self._before_previous_actions * C.WYW_ACTION_SCALE,          # 6
-                joint_acc * C.WYW_JOINT_ACC_SCALE,                           # 6
-                torque * C.WYW_TORQUE_SCALE,                                 # 6
+                leg_pos_dev * self.cfg.wyw_joint_pos_scale,                  # 4
+                dof_vel * self.cfg.wyw_dof_vel_scale,                        # 6
+                self._actions * self.cfg.wyw_action_scale,                   # 6
+                self._before_previous_actions * self.cfg.wyw_action_scale,   # 6
+                joint_acc * self.cfg.wyw_joint_acc_scale,                    # 6
+                torque * self.cfg.wyw_torque_scale,                          # 6
             ],
             dim=-1,
         )

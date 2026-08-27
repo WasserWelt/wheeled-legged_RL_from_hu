@@ -57,6 +57,25 @@ Jump 的 `WheelbipeWywJumpEnvCfg.__post_init__` 把 `WYW_JUMP_REWARD_WEIGHTS` �
 **冒烟验证结果**：`list_envs.py` 列出全部 6 个 wyw 任务；Flat/Rough/Jump 各 3 iter 训练成功，
 encoder 速度估计 loss 均下降（Flat 0.47→0.15、Rough 0.19→0.06、Jump 0.47→0.16），无 shape 报错。
 
+### 后续增量修订（2026-08-27 第二轮）
+初版之后的三处小改（详见 `docs/wyw_config_table.md`）：
+
+1. **obs 缩放：常量 → configclass 字段。** 原初版把 obs 缩放写成 `wyw_constants.py` 里的
+   `WYW_*_SCALE` 常量；改为遵循 IsaacLab / `wheelbipe25_v3`（`lin_vel_scale=1.0` …）风格，作为
+   `WheelbipeWywFlatEnvCfg` 的 configclass 字段 `wyw_*_scale`，`env.py` 改读 `self.cfg.wyw_*_scale`。
+   动机：随 `params/env.yaml` 落盘、可按任务覆写、与基类风格一致。**`wyw_constants.py` 只保留维度 /
+   几何目标 / 物理阈值 / 跳跃奖励权重**（scale 不再属于常量文件）。
+   ⚠️ 命名：obs action 段缩放 `wyw_action_scale=1.0` 与 env 级动作输出 `action_scale=0.25` 是不同字段。
+   （注：该重构曾一度只改了一半——删了常量但 `env.py` 仍引用、`env_cfg.py` 未定义字段，会
+   `AttributeError`；现已补齐。）
+2. **每任务独立 runner cfg。** 由单个 `WheelbipeWywPPORunnerCfg`（step 6 原计划）扩展为三个：
+   `WheelbipeWywPPORunnerCfg`（Flat）、`WheelbipeWywRoughPPORunnerCfg`、`WheelbipeWywJumpPPORunnerCfg`，
+   后两者继承前者，**仅 `experiment_name` 不同**（`..._flat/rough/jump_direct`），超参完全共享。
+   `wyw/__init__.py` 中 Flat/Rough/Jump 注册分别指向 `_RUNNER_FLAT/ROUGH/JUMP`，日志目录分开、便于
+   区分 checkpoint / 曲线；Play 变体复用对应主任务 runner。
+3. **height_range 强制锁定。** `_apply_wyw_common` 末尾新增 `cfg.height_range=[0.20,0.42]`，防止
+   Rough 的 `_apply_v14_rough_runtime_cfg` 把骑行高度量纲改掉（如 [0.2,0.3]）。
+
 ## 背景
 
 在 `wheeled-legged_RL_from_hu`(Isaac Sim + Isaac Lab **DirectRLEnv** + RSL-RL)中

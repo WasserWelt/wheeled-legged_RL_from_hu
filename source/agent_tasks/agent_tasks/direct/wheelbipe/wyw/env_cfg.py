@@ -12,8 +12,10 @@
 """wyw 任务族环境配置（Flat / Rough / Jump + Play）。
 
 - 本体沿用 from_hu ``Wheelbipe_V14_2_CFG``（继承自 :class:`WheelbipeV14FlatEnvCfg`）。
-- 观测走 fudan 25/125/46 布局：在 ``__post_init__`` 末尾强制覆写
-  ``observation_space``（dict）与 ``state_space``，环境侧再覆写实际返回张量。
+- 观测走 fudan 25/125/46 布局：在 ``__post_init__`` 末尾（``_apply_wyw_common``）强制把
+  ``observation_space`` / ``state_space`` 设为 **int**（25 / 46，**不是 dict**——传 dict 会被
+  stock ``DirectRLEnv._configure_gym_env_spaces`` 整体嵌进 ``["policy"]`` 丢掉 policy_hist 键），
+  环境侧 ``_get_observations`` 再覆写实际返回张量（policy/policy_hist/critic 三键）。
 - decimation=2 → 100Hz 策略（from_hu V14 默认 decimation=4=50Hz）。
 - 命令范围收敛到 fudan：vx±2.1、yaw±2.0，关闭 spin/dash 特殊模式。
 - Flat/Rough 复用 V14 的 locomotion ``rewards``；Jump 追加 fudan 涌现式跳跃项。
@@ -66,6 +68,9 @@ def _apply_wyw_common(cfg) -> None:
         for mode in special_modes.values():
             mode.rel_envs = 0.0
 
+    # 高度命令区间锁死为 from_hu 骑行高度量纲（rough helper 可能改成 [0.2,0.3]，这里强制回来）
+    cfg.height_range = [0.20, 0.42]
+
 
 @configclass
 class WheelbipeWywFlatEnvCfg(WheelbipeV14FlatEnvCfg):
@@ -81,6 +86,24 @@ class WheelbipeWywFlatEnvCfg(WheelbipeV14FlatEnvCfg):
     # 声明（会在 __post_init__ 末尾再强制一次，防止基类重算覆盖）
     observation_space = C.WYW_POLICY_OBS_DIM
     state_space = C.WYW_CRITIC_DIM
+
+    # ------------------------------------------------------------------ #
+    # 观测缩放（obs_scales）—— 按 IsaacLab / wheelbipe25_v3 风格作为 configclass 字段。
+    # 好处：随 params/env.yaml 落盘、可按任务覆写、与基类风格一致（scale 是配置非常量）。
+    # env.py 通过 self.cfg.wyw_*_scale 读取。⚠️ 与部署端逐位一致（对齐 fudan obs_scales）。
+    # 注意：这里的 wyw_action_scale 是 **obs 里 action 段** 的缩放，
+    #       与基类 env 级动作输出缩放 action_scale=0.25 是两回事，勿混淆。
+    # ------------------------------------------------------------------ #
+    wyw_ang_vel_scale = 0.25        # 机身角速度
+    wyw_dof_vel_scale = 0.05        # 关节速度
+    wyw_lin_vel_scale = 2.0         # 命令 vx + critic base_lin_vel
+    wyw_cmd_ang_vel_scale = 0.25    # 偏航命令
+    wyw_height_cmd_scale = 1.0      # 高度命令
+    wyw_proj_gravity_scale = 1.0    # 投影重力
+    wyw_joint_pos_scale = 1.0       # 腿关节位置 / 偏差
+    wyw_action_scale = 1.0          # obs 里 action 段（≠ 动作输出缩放）
+    wyw_joint_acc_scale = 0.0025    # critic 专用
+    wyw_torque_scale = 0.05         # critic 专用
 
     # 跳跃奖励注入开关（Flat/Rough 关闭）
     wyw_jump_enabled = False
