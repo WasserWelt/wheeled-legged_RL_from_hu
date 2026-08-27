@@ -109,7 +109,7 @@ Flat/Rough = **2.0**、Jump = **3.0**（对齐 fudan plane/jump 的 `obs_scales.
 | 命令 `[vx, yaw, height]` | 3 | vx×2.0 / yaw×0.25 / height×1.0 | `_get_wyw_command_block` |
 | 腿关节位置 `obs_joint_pos[:, :4]` | 4 | ×1.0 | 前 4 = 驱动腿关节 |
 | 关节速度 `obs_joint_vel` | 6 | ×0.05 | 4 腿 + 2 轮 |
-| 上一步动作 `_actions` | 6 | ×1.0 | |
+| 上一步动作 `_actions` | 6 | 原始（不缩放） | 网络原始输出（缩放前） |
 
 ### Critic 特权观测（✅ 141 维，`_build_wyw_critic_obs`，已与 fudan 逐段一致）
 
@@ -122,8 +122,8 @@ Flat/Rough = **2.0**、Jump = **3.0**（对齐 fudan plane/jump 的 `obs_scales.
 |---|---|---|---|---|
 | **基座线速度 `root_lin_vel_b`** | **3** | ×`wyw_lin_vel_scale`(Flat/Rough 2.0 / Jump 3.0) | `robot.data.root_lin_vel_b`（clean，特权） | `base_lin_vel × lin_vel` |
 | **本体观测 `obs_buf`** | **25** | 各段同 policy | **复用 `_build_wyw_policy_obs()`**（含延迟/带噪副本） | `obs_buf` |
-| 上一步动作 `_previous_actions` | 6 | ×1.0 | `self._previous_actions` (t−1) | `last_actions[:,:,0]` |
-| 上上步动作 `_before_previous_actions` | 6 | ×1.0 | `self._before_previous_actions` (t−2) | `last_actions[:,:,1]` |
+| 上一步动作 `_previous_actions` | 6 | 原始（不缩放） | `self._previous_actions` (t−1) | `last_actions[:,:,0]` |
+| 上上步动作 `_before_previous_actions` | 6 | 原始（不缩放） | `self._before_previous_actions` (t−2) | `last_actions[:,:,1]` |
 | 关节加速度 `joint_acc[_actuate_idx]` | 6 | ×0.0025 | `robot.data.joint_acc` | `dof_acc × dof_acc` |
 | **地形高度扫描 `heights`** | **77** | ×`height_scale`(5.0) | **`_get_scan_dot_obs()`**（11×7 `dot_scanner`） | `heights` |
 | 关节力矩 `applied_torque[_actuate_idx]` | 6 | ×0.05 | `robot.data.applied_torque` | `torques × torque` |
@@ -168,12 +168,14 @@ Flat/Rough = **2.0**、Jump = **3.0**（对齐 fudan plane/jump 的 `obs_scales.
 | `wyw_height_cmd_scale` | **1.0** | 高度命令 ⚠️ 见第 5 节注意点 |
 | `wyw_proj_gravity_scale` | 1.0 | |
 | `wyw_joint_pos_scale` | 1.0 | |
-| `wyw_action_scale` | 1.0 | **obs 里** action 段的缩放（≠ env 级动作输出缩放 `action_scale=0.25`，见第 4 节） |
 | `wyw_joint_acc_scale` | 0.0025 | critic |
 | `wyw_torque_scale` | 0.05 | critic |
 
-> ⚠️ 命名注意：obs action 段缩放叫 `wyw_action_scale`（=1.0），与基类 env 级动作输出缩放
-> `action_scale`（=0.25，第 4 节）**是不同字段**，勿混淆。
+> **obs 里 action 段不缩放**：fudan 的 `obs_buf` 直接拼原始 `self.actions`、privileged 直接拼
+> `last_actions[:,:,0/1]`（均无 obs_scale）。wyw 对应 `self._actions` / `_previous_actions` /
+> `_before_previous_actions`（基类里 `_actions = actions.clone()`，是**缩放前**的网络原始输出），
+> 因此**不设** `wyw_action_scale`（scale=1.0 即无操作）。env 级动作输出缩放 `action_scale=0.25`
+> （第 4 节）作用于施加到机器人的指令，与 obs 无关，是完全独立的两个东西。
 
 ---
 
@@ -187,7 +189,7 @@ Flat/Rough = **2.0**、Jump = **3.0**（对齐 fudan plane/jump 的 `obs_scales.
 | `sim.gravity` | (0, 0, −9.81) | |
 | `episode_length_s` | 20.0 | |
 | `action_space` | 6 | 4 腿关节位置 + 2 轮速 |
-| **`action_scale`** | **0.25** | ⚠️ **env 级动作输出缩放**（基类），与 obs 里的 `WYW_ACTION_SCALE=1.0` 是**两回事**。⚠️ 需核对：docs/intention.md 部署契约写"腿 0.5 / 轮 10"——请确认腿/轮是否分别再映射，以及是否与该 0.25 一致。 |
+| **`action_scale`** | **0.25** | **env 级动作输出缩放**（基类，作用于施加到机器人的指令；obs 里的 action 段是原始网络输出、不缩放，二者独立）。⚠️ 需核对：docs/intention.md 部署契约写"腿 0.5 / 轮 10"——请确认腿/轮是否分别再映射，以及是否与该 0.25 一致。 |
 
 ---
 
@@ -364,7 +366,7 @@ Flat/Rough = **2.0**、Jump = **3.0**（对齐 fudan plane/jump 的 `obs_scales.
 ## 13. ⚠️ 需重点人工核对清单
 
 1. **动作输出缩放**：env `action_scale = 0.25`。核对腿/轮是否各自再映射（部署契约称腿 0.5 / 轮 10），
-   训练与部署是否一致。（obs 里的 `wyw_action_scale=1.0` 是另一回事，勿混淆。）
+   训练与部署是否一致。（obs 里的 action 段是原始网络输出、不缩放，与此独立。）
 2. **height 命令 obs 缩放**：wyw 用 `wyw_height_cmd_scale=1.0`，基类 obs 机制是 5.0。确认部署端一致。
 3. ✅ **experiment_name 已分开**（flat/rough/jump 三个目录）；PPO 超参三者共享（继承同一 `SequencePPORunnerCfg`）。本表 PPO 数值仍取自 Flat dump，如需可跑 Rough/Jump 各 3-iter 交叉核对。
 4. **起跳能力**：legs_act Kp=60 是否够软，Jump 是否需要单独 PD / nominal 站姿。

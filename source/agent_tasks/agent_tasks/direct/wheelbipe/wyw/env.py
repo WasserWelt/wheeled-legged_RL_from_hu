@@ -88,7 +88,7 @@ class WheelbipeWywEnv(WheelbipeV14Env):
                 cmd,                                                         # 3
                 self.obs_joint_pos[:, :leg] * self.cfg.wyw_joint_pos_scale,  # 4
                 self.obs_joint_vel * self.cfg.wyw_dof_vel_scale,             # 6
-                self._actions * self.cfg.wyw_action_scale,                   # 6
+                self._actions,                                               # 6 (原始动作，fudan obs 不缩放)
             ],
             dim=-1,
         )
@@ -157,8 +157,8 @@ class WheelbipeWywEnv(WheelbipeV14Env):
             [
                 base_lin_vel,                                                # 3
                 policy_obs,                                                  # 25 (= fudan obs_buf)
-                self._previous_actions * self.cfg.wyw_action_scale,          # 6  (last_actions[:,:,0])
-                self._before_previous_actions * self.cfg.wyw_action_scale,   # 6  (last_actions[:,:,1])
+                self._previous_actions,                                      # 6  (last_actions[:,:,0]，不缩放)
+                self._before_previous_actions,                               # 6  (last_actions[:,:,1]，不缩放)
                 joint_acc * self.cfg.wyw_joint_acc_scale,                    # 6
                 heights,                                                     # 77
                 torque * self.cfg.wyw_torque_scale,                          # 6

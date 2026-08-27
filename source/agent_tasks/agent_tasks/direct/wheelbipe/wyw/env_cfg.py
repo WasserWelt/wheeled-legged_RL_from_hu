@@ -102,8 +102,9 @@ class WheelbipeWywFlatEnvCfg(WheelbipeV14FlatEnvCfg):
     # 观测缩放（obs_scales）—— 按 IsaacLab / wheelbipe25_v3 风格作为 configclass 字段。
     # 好处：随 params/env.yaml 落盘、可按任务覆写、与基类风格一致（scale 是配置非常量）。
     # env.py 通过 self.cfg.wyw_*_scale 读取。⚠️ 与部署端逐位一致（对齐 fudan obs_scales）。
-    # 注意：这里的 wyw_action_scale 是 **obs 里 action 段** 的缩放，
-    #       与基类 env 级动作输出缩放 action_scale=0.25 是两回事，勿混淆。
+    # 注意：obs 里的 action 段**不缩放**（fudan obs 直接用原始 actions / last_actions，
+    #       scale=1.0 等于无操作），故不设 wyw_action_scale 字段，env.py 直接用 self._actions。
+    #       env 级动作输出缩放是另一个字段 action_scale=0.25（第 4 节），与 obs 无关。
     # ------------------------------------------------------------------ #
     wyw_ang_vel_scale = 0.25        # 机身角速度
     wyw_dof_vel_scale = 0.05        # 关节速度
@@ -112,7 +113,6 @@ class WheelbipeWywFlatEnvCfg(WheelbipeV14FlatEnvCfg):
     wyw_height_cmd_scale = 1.0      # 高度命令
     wyw_proj_gravity_scale = 1.0    # 投影重力
     wyw_joint_pos_scale = 1.0       # 腿关节位置 / 偏差
-    wyw_action_scale = 1.0          # obs 里 action 段（≠ 动作输出缩放）
     wyw_joint_acc_scale = 0.0025    # critic 专用
     wyw_torque_scale = 0.05         # critic 专用
 
