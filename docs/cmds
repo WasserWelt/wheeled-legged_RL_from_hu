@@ -1,0 +1,15 @@
+echo "--- connections to X display :1 socket, grouped by process ---"; ss -xp 2>/dev/null | grep -oE 'users:\(\("[^"]+",pid=[0-9]+' | sed 's/users:((//' | sort | uniq -c | sort -rn | head -20; echo "--- total X11-unix conns ---"; ss -x 2>/dev/null | grep -c "X11-unix"
+
+python scripts/rsl_rl/play.py --task=Robotics-Wheelbipe-V14-Rough-Play-v0 --num_envs=1 --checkpoint=pretrained/26_infantry/rough_rotation_stair/2026-07-23_16-23-21/model_1000.pt --keyboard
+
+python scripts/rsl_rl/play.py --task=Robotics-Wheelbipe-V14-Flat-Play-v2 --num_envs=1   --checkpoint=./pretrained/26_infantry/flat_and_rotation/2026-07-19_09-14-50/model_8000.pt --keyboard
+
+# 键盘自由驾驶版 Rough（去掉跑场强制前进，可自己开；地形=训练同款 RM_ROTATION_TERRAINS_CFG_99）
+python scripts/rsl_rl/play.py --task=Robotics-Wheelbipe-V14-Rough-KbPlay-v0 --num_envs=1 --checkpoint=pretrained/26_infantry/rough_rotation_stair/2026-07-23_10-19-59/model_2500.pt --keyboard
+
+# STEP 场地 -> STL（先体检；确认后去掉 --probe-only 正式转换）
+python scripts/tools/step_to_stl.py RMUC2026_V2.0.0.stp assets/rmuc2026.stl --probe-only
+
+# 可视化旦的模型
+cd /home/wyw/my_tasks/RL_2026/fudan_rl_wheel_leg/mujoco/assert_now/infantry_binglian_yuntai/infantry_V2/meshes/
+DISPLAY=:1 python -m mujoco.viewer --mjcf=mjmodel.xml
