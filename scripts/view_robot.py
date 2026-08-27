@@ -14,9 +14,13 @@
 
 """Launch Isaac Sim Simulator first."""
 import sys
+import os
 import argparse
 import math
 import time
+
+# 直接以脚本文件方式启动时 cwd 不会自动进入 sys.path，需显式加入根目录。
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from isaaclab.app import AppLauncher
 

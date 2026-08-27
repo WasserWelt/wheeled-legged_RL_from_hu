@@ -178,3 +178,14 @@ gym.register(
     },
 )
 
+
+gym.register(
+    id="Robotics-Wheelbipe-V14-Rough-KbPlay-v0",
+    entry_point=f"{__name__}.env:WheelbipeV14Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.env_cfg:WheelbipeV14RoughEnvCfg_KbPlay",
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:WheelbipeV14RoughPPORunnerCfg",
+    },
+)
+

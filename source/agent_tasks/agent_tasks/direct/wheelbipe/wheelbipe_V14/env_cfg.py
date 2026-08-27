@@ -2212,6 +2212,78 @@ class WheelbipeV14RoughEnvCfg_Play(WheelbipeV14RoughEnvCfg):
             "html_path": "logs/debug/rough_play_velocity_trace.html",
         }
 
+
+@configclass
+class WheelbipeV14RoughEnvCfg_KbPlay(WheelbipeV14RoughEnvCfg_Play):
+    """键盘自由驾驶版 Rough Play。
+
+    与 ``WheelbipeV14RoughEnvCfg_Play``（Rough-Play-v0）观测/网络维度完全一致，
+    因此可直接加载 rough 系列 checkpoint（net [256,128,64]）。区别在于去掉了
+    "跑场" 强制前进逻辑，使机器人完全由键盘控制：
+      1. 清空 ``terrain_command_overrides``（关闭 TerrainCommandManager 的按地形强制命令）；
+      2. 命令改为对称范围、默认静止、无 heading 自动控制，键盘每帧直接写入 command；
+      3. 取消每 5s 空中前冲复位，改为地面复位；
+      4. episode 拉长；
+      5. 地形换成策略训练时的旋转粗糙地形（分布内），带课程、多类子地形。
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        # 1) 关闭地形强制命令覆盖（这是 Rough-Play-v0 "键盘无效、一直往前冲" 的主因）
+        self.terrain_command_overrides = {}
+
+        # 2) 命令改为键盘可控：
+        #    关键点——rel_standing_envs 必须为 0！否则 _update_command 每帧会把
+        #    "standing" env 的速度命令清零（commands.py:601），键盘写入立即被覆盖，
+        #    表现为"键盘无反应，命令恒为 0"。
+        #    采样范围设为 0 宽度：reset 时命令为 0（机器人起步静止），
+        #    之后键盘每帧用 fill_() 直接写入 command（绕过采样范围），命令得以保持。
+        self.commands = mdp.UniformVelocityCommandCfg(
+            asset_name="robot",
+            resampling_time_range=(1.0e6, 1.0e6),  # 基本不自动重采样，命令交给键盘每帧写入
+            rel_standing_envs=0.0,                  # 不强制静止，避免每帧清零键盘命令
+            rel_heading_envs=0.0,
+            heading_command=False,                  # 关闭 heading 自动控制，否则会覆盖键盘 omega_z
+            debug_vis=True,
+            ranges=mdp.UniformVelocityCommandCfg.Ranges(
+                lin_vel_x=(0.0, 0.0),
+                lin_vel_y=(0.0, 0.0),
+                ang_vel_z=(0.0, 0.0),
+                heading=(0.0, 0.0),
+            ),
+        )
+
+        # 3) 地面复位，取消每 5s 的空中前冲发射
+        self.predefined_reset_air = {"enabled": False, "modes": ()}
+        self.predefined_reset_ground = dict(self.predefined_reset_ground)
+        self.predefined_reset_ground["prob"] = 1.0
+
+        # 4) episode 拉长，方便持续驾驶
+        self.episode_length_s = 120.0
+
+        # 5) 用策略训练时的旋转粗糙地形（分布内），带课程、多类子地形
+        _kb_terrain = copy.deepcopy(mdp.RM_ROTATION_TERRAINS_CFG_99)
+        _kb_terrain.curriculum = True
+        self.terrain = TerrainImporterCfg(
+            prim_path="/World/ground",
+            terrain_type="generator",
+            collision_group=-1,
+            terrain_generator=_kb_terrain,
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                friction_combine_mode="multiply",
+                restitution_combine_mode="multiply",
+                static_friction=1.0,
+                dynamic_friction=1.0,
+                restitution=0.0,
+            ),
+            debug_vis=False,
+        )
+
+        # 关闭跑场速度轨迹录制（自由驾驶不需要）
+        self.velocity_trace_cfg = {**self.velocity_trace_cfg, "enabled": False}
+
+
 @configclass
 class WheelbipeV14RoughEnvCfg_v1_Play(WheelbipeV14RoughEnvCfg_v1):
     ctrl_mode_obs_enabled = True
