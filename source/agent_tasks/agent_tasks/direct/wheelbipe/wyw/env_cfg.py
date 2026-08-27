@@ -12,8 +12,8 @@
 """wyw 任务族环境配置（Flat / Rough / Jump + Play）。
 
 - 本体沿用 from_hu ``Wheelbipe_V14_2_CFG``（继承自 :class:`WheelbipeV14FlatEnvCfg`）。
-- 观测走 fudan 25/125/46 布局：在 ``__post_init__`` 末尾（``_apply_wyw_common``）强制把
-  ``observation_space`` / ``state_space`` 设为 **int**（25 / 46，**不是 dict**——传 dict 会被
+- 观测走 fudan 25/125/141 布局：在 ``__post_init__`` 末尾（``_apply_wyw_common``）强制把
+  ``observation_space`` / ``state_space`` 设为 **int**（25 / 141，**不是 dict**——传 dict 会被
   stock ``DirectRLEnv._configure_gym_env_spaces`` 整体嵌进 ``["policy"]`` 丢掉 policy_hist 键），
   环境侧 ``_get_observations`` 再覆写实际返回张量（policy/policy_hist/critic 三键）。
 - decimation=2 → 100Hz 策略（from_hu V14 默认 decimation=4=50Hz）。
@@ -56,6 +56,17 @@ def _apply_wyw_common(cfg) -> None:
     cfg.observation_space = C.WYW_POLICY_OBS_DIM
     cfg.state_space = C.WYW_CRITIC_DIM
     cfg.num_obs_hist = C.WYW_NUM_OBS_HIST
+
+    # fudan critic 含 11×7=77 维地形高度扫描（privileged）。启用基类 dot_scanner，
+    # 并把网格改成 fudan 尺寸：x∈[-0.5,0.5] 步 0.1（11 点）、y∈[-0.3,0.3] 步 0.1（7 点）。
+    # 三任务（含 plane 的 Flat/Jump）都挂扫描器——plane 上读到近平地（clip 后≈0），
+    # rough 上读到真实地形起伏。_get_scan_dot_obs 用 _pad_flat_features 截/补到 n_scan=77。
+    cfg.enable_scan_dot = True
+    cfg.n_scan = C.WYW_N_SCAN
+    cfg.height_scale = C.WYW_HEIGHT_SCALE
+    cfg.dot_scanner = copy.deepcopy(cfg.dot_scanner)
+    cfg.dot_scanner.pattern_cfg.resolution = 0.1
+    cfg.dot_scanner.pattern_cfg.size = (1.0, 0.6)
 
     # 命令：收敛到 fudan locomotion 范围，关闭 spin/dash 特殊模式
     ranges = getattr(cfg.commands, "ranges", None)
@@ -137,6 +148,11 @@ class WheelbipeWywJumpEnvCfg(WheelbipeWywFlatEnvCfg):
     """wyw Jump：平地 + locomotion + fudan 涌现式跳跃奖励（无显式起跳状态机）。"""
 
     wyw_jump_enabled = True
+
+    # fudan jump 变体的 lin_vel obs_scale = 3.0（plane 版为 2.0）。该字段同时驱动
+    # 命令 vx 缩放与 critic base_lin_vel 缩放（也即 encoder 监督目标 = base_lin_vel×3.0），
+    # 与 fudan commands_scale[0]==obs_scales.lin_vel 的耦合一致。
+    wyw_lin_vel_scale = 3.0
 
     def __post_init__(self):
         super().__post_init__()

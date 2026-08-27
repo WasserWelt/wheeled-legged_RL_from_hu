@@ -22,6 +22,16 @@
 >    迁移为 `env_cfg.py` 中 `WheelbipeWywFlatEnvCfg` 的 `wyw_*_scale` configclass 字段（IsaacLab /
 >    `wheelbipe25_v3` 风格），`env.py` 改读 `self.cfg.wyw_*_scale`。→ 第 3 节已改写。
 >    （注：本轮首次交付时该重构只做了一半会崩，现已补齐 env_cfg 字段定义 + env.py 读取。）
+>
+> **本次同步（2026-08-27 第三轮）**：
+> 4. **✅ critic 扩到 fudan 原始 141 维**（用户要求"与原来一致"）：`_build_wyw_critic_obs` 重写为
+>    base_lin_vel(3)+obs_buf(25,复用 policy)+prev/before_prev actions(6+6)+joint_acc(6)+heights(77)
+>    +torque(6)+DR 特权(mass1/com3/default_dof6/friction1/restitution1)=141；`WYW_CRITIC_DIM`=141、
+>    `state_space`=141。三任务经 `_apply_wyw_common` 挂 11×7 `dot_scanner`（size=(1.0,0.6)、res=0.1）、
+>    `enable_scan_dot=True`、`n_scan=77`、`height_scale=5.0`。→ 第 1、2、12、13 节已更新。
+> 5. **✅ jump ≠ plane 的 lin_vel 缩放**：`WheelbipeWywJumpEnvCfg` 覆写 `wyw_lin_vel_scale=3.0`
+>    （Flat/Rough 保持 2.0），对齐 fudan jump/plane 变体。→ 第 1、3、12、13 节已更新。
+> 6. **冒烟已过**：Jump 3 iter + Rough 2 iter，env.yaml 落盘确认 141/77/scale 值，无 shape 报错。
 
 ---
 
@@ -52,7 +62,7 @@
 | `init_noise_std` | 0.5 | |
 | `encoder_hidden_dims` | [128, 64] | 输入 125 → latent 3 |
 | `actor_hidden_dims` | [128, 64, 32] | 输入 = 25 + latent 3 = 28 |
-| `critic_hidden_dims` | [256, 128, 64] | 输入 = 46 + latent 3 = 49 |
+| `critic_hidden_dims` | [256, 128, 64] | 输入 = 141 + latent 3 = 144（critic 已扩到 fudan 原始 141） |
 | `activation` | elu | |
 | `num_steps_per_env` | 48 | rollout 长度 |
 | `num_learning_epochs` | 5 | |
@@ -70,7 +80,10 @@
 | `experiment_name` | Flat=`wheelbipe_v14_wyw_flat_direct` / Rough=`..._rough_direct` / Jump=`..._jump_direct` | ✅ 三任务日志目录已分开。本轮已落地：`WheelbipeWywRoughPPORunnerCfg` / `WheelbipeWywJumpPPORunnerCfg` 均继承 `WheelbipeWywPPORunnerCfg`（后者继承 `SequencePPORunnerCfg`），**仅** `experiment_name` 不同、其余超参完全继承共享。`wyw/__init__.py` 中 Flat/Rough/Jump 分别指向 `_RUNNER_FLAT`/`_RUNNER_ROUGH`/`_RUNNER_JUMP`；Play 变体复用对应主任务 runner（同 name），便于 play.py 加载 checkpoint。 |
 
 **encoder 监督**：`PPOSequence` 每次更新加 `MSE(latent[:, :3], critic_obs[:, :3])`，
-即 latent 前 3 维回归 `base_lin_vel × 2.0`。
+即 latent 前 3 维回归 `base_lin_vel × wyw_lin_vel_scale`。⚠️ **该缩放按任务不同**：
+Flat/Rough = **2.0**、Jump = **3.0**（对齐 fudan plane/jump 的 `obs_scales.lin_vel`）。
+故 Jump 的 encoder 监督目标 = `base_lin_vel × 3.0`，与 Flat/Rough 不同——这是**故意**的，
+不是 bug（见第 3 节）。
 
 ---
 
@@ -79,7 +92,7 @@
 | 项 | 值 |
 |---|---|
 | `observation_space` (policy) | **25** (int) |
-| `state_space` (critic) | **46** (int) |
+| `state_space` (critic) | **141** (int) —— ✅ 已与 fudan 原始 privileged_obs 逐段一致 |
 | `num_obs_hist` | 5 |
 | encoder 输入 (policy_hist) | 125 = 5 × 25（runner 回落推导，非 obs dict 键） |
 | `num_privileged_obs_hist` | 1 |
@@ -98,23 +111,42 @@
 | 关节速度 `obs_joint_vel` | 6 | ×0.05 | 4 腿 + 2 轮 |
 | 上一步动作 `_actions` | 6 | ×1.0 | |
 
-### Critic 特权观测（46 维，`_build_wyw_critic_obs`）
+### Critic 特权观测（✅ 141 维，`_build_wyw_critic_obs`，已与 fudan 逐段一致）
 
-| 段 | 维 | 缩放 | 备注 |
-|---|---|---|---|
-| **基座线速度 `root_lin_vel_b`** | **3** | **×2.0** | **必须是前 3 维**（encoder 监督目标） |
-| 机身角速度 `root_ang_vel_b` | 3 | ×0.25 | |
-| 投影重力 `projected_gravity_b` | 3 | ×1.0 | |
-| 命令 `[vx, yaw, height]` | 3 | 同 policy | |
-| 腿关节偏差 `(joint_pos-default)[_legs_act_idx]` | 4 | ×1.0 | |
-| 关节速度 `joint_vel[_actuate_idx]` | 6 | ×0.05 | |
-| 当前动作 `_actions` | 6 | ×1.0 | |
-| 前前步动作 `_before_previous_actions` | 6 | ×1.0 | |
-| 关节加速度 `joint_acc[_actuate_idx]` | 6 | ×0.0025 | critic 专用 |
-| 关节力矩 `applied_torque[_actuate_idx]` | 6 | ×0.05 | critic 专用 |
+> 已核对 fudan（`fudan_rl_wheel_leg/{plane,jump}/wheel_legged_gym/envs/base/legged_robot.py`
+> 的 `compute_observations` → `privileged_obs_buf`）：`num_privileged_obs =
+> num_observations(25) + 7*11(77) + 3 + 6*5(30) + 3 + 3 = 141`。plane 与 jump 版组成**完全一致**
+> （唯一差异是 `lin_vel` 缩放 3.0 / 2.0，不改维度）。本轮已把 wyw critic 从 46 扩到 141。
 
-> ⚠️ Critic **不含**地形高度扫描、域随机化特权参数（base_mass/com/friction 等）。原计划估算
-> ≈141，as-built 精简为 46。若后续需要 sim2real 鲁棒性可再追加（并同步 `state_space`）。
+| 段 | 维 | 缩放 | 源（from_hu 实现） | 对应 fudan |
+|---|---|---|---|---|
+| **基座线速度 `root_lin_vel_b`** | **3** | ×`wyw_lin_vel_scale`(Flat/Rough 2.0 / Jump 3.0) | `robot.data.root_lin_vel_b`（clean，特权） | `base_lin_vel × lin_vel` |
+| **本体观测 `obs_buf`** | **25** | 各段同 policy | **复用 `_build_wyw_policy_obs()`**（含延迟/带噪副本） | `obs_buf` |
+| 上一步动作 `_previous_actions` | 6 | ×1.0 | `self._previous_actions` (t−1) | `last_actions[:,:,0]` |
+| 上上步动作 `_before_previous_actions` | 6 | ×1.0 | `self._before_previous_actions` (t−2) | `last_actions[:,:,1]` |
+| 关节加速度 `joint_acc[_actuate_idx]` | 6 | ×0.0025 | `robot.data.joint_acc` | `dof_acc × dof_acc` |
+| **地形高度扫描 `heights`** | **77** | ×`height_scale`(5.0) | **`_get_scan_dot_obs()`**（11×7 `dot_scanner`） | `heights` |
+| 关节力矩 `applied_torque[_actuate_idx]` | 6 | ×0.05 | `robot.data.applied_torque` | `torques × torque` |
+| **`base_mass − default`** | **1** | — | `masses − default_mass`（base_link 体） | `base_mass − mean` |
+| **`base_com`** | **3** | — | `body_com_pos_b[base_link]` | `base_com` |
+| **`default_dof_delta`** | **6** | — | `default_joint_pos − nominal`（from_hu 未随机化→恒 0） | `default_dof_pos − raw` |
+| **`friction`** | **1** | — | `material_properties[...,0].mean` | `friction_coef` |
+| **`restitution`** | **1** | — | `material_properties[...,2].mean` | `restitution_coef` |
+| **合计** | **141** | | | |
+
+> 实现要点（`env.py`）：
+> - `obs_buf` 段**直接复用 policy 观测张量**（`_get_observations` 里把已算好的 policy 传给
+>   `_build_wyw_critic_obs(policy)`），保证与 fudan「privileged = concat(base_lin_vel, obs_buf, …)」
+>   逐位一致：proprio 段是**带噪/延迟**副本，仅 base_lin_vel 与 DR 特权是 clean。
+> - 上一步动作用 `_previous_actions`（原 46 版误用 `_actions` 当前动作，本轮修正为 t−1/t−2 两拍）。
+> - `heights` 走基类原生 `dot_scanner` + `_get_scan_dot_obs`（不动 base_link 上的 3×3 地面高度探针）；
+>   `_pad_flat_features` 截/补到 `n_scan=77`。critic 不导出部署，故 77 点空间排序无需与 fudan 逐点对齐。
+> - DR 特权（mass/com/friction/restitution/default_dof 偏差）未做 obs 缩放，与 fudan 原始一致；
+>   `default_dof_delta` 在 from_hu 上恒 0（未随机化默认关节位），仅占位保维度，若日后随机化则自动生效。
+>
+> ✅ **冒烟已过**：Jump（lin_vel 3.0）跑 3 iter、Rough（lin_vel 2.0，经 rough helper）跑 2 iter，
+> `params/env.yaml` 落盘确认 `state_space=141 / n_scan=77 / enable_scan_dot=true / dot_scanner size=(1.0,0.6)`，
+> 无 shape/维度报错，jump 6 项奖励正常计入。
 
 ---
 
@@ -131,7 +163,7 @@
 |---|---|---|
 | `wyw_ang_vel_scale` | 0.25 | 机身角速度 |
 | `wyw_dof_vel_scale` | 0.05 | 关节速度 |
-| `wyw_lin_vel_scale` | 2.0 | 命令 vx + critic base_lin_vel |
+| `wyw_lin_vel_scale` | **Flat/Rough 2.0 / Jump 3.0** | 命令 vx + critic base_lin_vel（+ encoder 监督目标）。⚠️ **Jump 在 `WheelbipeWywJumpEnvCfg` 覆写为 3.0**，对齐 fudan jump 变体（plane=2.0、jump=3.0） |
 | `wyw_cmd_ang_vel_scale` | 0.25 | 偏航命令 |
 | `wyw_height_cmd_scale` | **1.0** | 高度命令 ⚠️ 见第 5 节注意点 |
 | `wyw_proj_gravity_scale` | 1.0 | |
@@ -320,7 +352,8 @@
 | 课程 / 高度扫描 / 状态机 | 关 | 经 `_apply_v14_rough_runtime_cfg` 开启 | 关 |
 | `wyw_jump_enabled` | False | False | **True** |
 | 奖励 | locomotion（第 8 节） | locomotion | locomotion + jump 6 项（第 9 节） |
-| Obs / Critic / 网络 / PPO | 完全共享 | 共享 | 共享 |
+| Obs(25) / Critic(141) / 网络 / PPO | 共享 | 共享 | 共享（**唯一差异**：`wyw_lin_vel_scale` Jump=3.0 vs Flat/Rough=2.0） |
+| 高度扫描 `dot_scanner`(11×7=77) | ✅ 挂（plane 读近平地） | ✅ 挂（读真实地形） | ✅ 挂（plane 读近平地） |
 | decimation / 命令范围 / **height_range** | `_apply_wyw_common` 强制一致（decimation=2、obs/critic int 形状、命令范围、**height_range=[0.20,0.42]**） | 同（rough helper 后再强制一次） | 同 |
 
 > Rough 的 `__post_init__` 顺序：`super()` → `_apply_v14_rough_runtime_cfg(self)` →
@@ -336,5 +369,12 @@
 3. ✅ **experiment_name 已分开**（flat/rough/jump 三个目录）；PPO 超参三者共享（继承同一 `SequencePPORunnerCfg`）。本表 PPO 数值仍取自 Flat dump，如需可跑 Rough/Jump 各 3-iter 交叉核对。
 4. **起跳能力**：legs_act Kp=60 是否够软，Jump 是否需要单独 PD / nominal 站姿。
 5. **`WYW_BASE_HEIGHT_FLIGHT=0.60`**（from_hu 待实测）是否合理，换 fudan USD 后改 0.65。
-6. **critic 46 维是否够用**：暂无高度扫描 / DR 特权项，粗糙地形或 sim2real 是否需要补。
-7. **`right_rear2_link` 碰撞网格**警告的根因（USD 层面）。
+6. ✅ **critic 已扩到 fudan 原始 141 维**（用户要求"与原来一致"，本轮已落地并冒烟通过）：
+   `_build_wyw_critic_obs` 已补齐 obs_buf(25 复用 policy)+高度扫描(77, `dot_scanner` 11×7)
+   +DR 特权(base_mass/com/friction/restitution/default_dof 偏差)，动作改为 t−1/t−2 两拍，
+   `WYW_CRITIC_DIM`=141。三任务均 `enable_scan_dot=True / n_scan=77 / height_scale=5.0`。见第 2 节布局表。
+   人工待核对：① rough 地形上 `dot_scanner` 的 `mesh_prim_paths=["/World/ground"]` 是否命中 generator
+   地形（未命中则 scan 段恒 0，不崩但无信息量）；② from_hu 的 `body_com_pos_b` 是否为 DR 后的真实质心。
+7. **jump ≠ plane 的 `lin_vel` 缩放**：Jump=3.0、Flat/Rough=2.0（已在 `WheelbipeWywJumpEnvCfg` 覆写）。
+   注意这会让 Jump 的 **encoder 监督目标** = `base_lin_vel×3.0`，与 Flat/Rough 不同——刻意为之，勿"修正"。
+8. **`right_rear2_link` 碰撞网格**警告的根因（USD 层面）。

@@ -12,19 +12,24 @@
 """wyw 任务族的几何 / 观测 / 奖励常量（fudan 设计移植，from_hu 机器人本体）。
 
 设计意图（对齐 fudan_rl_wheel_leg）：
-- Actor 观测 25 维、Critic 特权观测拼 latent 前为 46 维、5 帧历史 → encoder 输入 125 维。
-- Actor/Critic/Obs/网络/PPO 超参在 Flat / Rough / Jump 三个任务间共享。
+- Actor 观测 25 维、Critic 特权观测拼 latent 前为 141 维（= fudan 原始 privileged_obs）、
+  5 帧历史 → encoder 输入 125 维。
+- Actor/Critic/Obs/网络/PPO 超参在 Flat / Rough / Jump 三个任务间共享
+  （唯一例外：Jump 的 ``wyw_lin_vel_scale=3.0``，Flat/Rough 为 2.0，见 env_cfg）。
 - ``WYW_ROBOT`` 开关切换本体相关的几何常量：``"from_hu"``（首版，USD 仍在改）或 ``"fudan"``。
 
 维度约定（from_hu Wheelbipe_V14_2，动作 6 维 = 4 腿关节位置 + 2 轮速）：
 - 腿部驱动关节 ``leg_dim = 4``，轮 2，``_actuate_idx`` 合计 6。
 - Policy(25) = ang_vel(3) + proj_gravity(3) + cmd[vx,yaw,height](3)
                + leg_pos_dev(4) + dof_vel(6) + actions(6)
-- Critic(46) = base_lin_vel(3) + ang_vel(3) + proj_gravity(3) + cmd(3)
-               + leg_pos_dev(4) + dof_vel(6) + actions(6) + prev_actions(6)
-               + joint_acc(6) + torque(6)
+- Critic(141) = base_lin_vel(3) + obs_buf(25=policy 本体) + prev_actions(6)
+                + before_prev_actions(6) + joint_acc(6) + heights(77)
+                + torque(6) + base_mass_dev(1) + base_com(3)
+                + default_dof_delta(6) + friction(1) + restitution(1)
+  与 fudan ``privileged_obs_buf`` 逐段一致（plane 与 jump 版组成完全相同）。
   其中 base_lin_vel 必须是前 3 维，供 encoder 的隐式线速度监督
   （PPOSequence: MSE(latent[:, :3], critic_obs[:, :3])）。
+  注：critic 只在训练用（不导出部署），故 heights 的 77 个采样点空间排序无需与 fudan 逐点对齐。
 """
 
 from __future__ import annotations
@@ -42,7 +47,9 @@ WYW_ACTION_DIM = 6              # 4 腿 + 2 轮
 WYW_POLICY_OBS_DIM = 25         # actor 观测维（见文件头布局）
 WYW_NUM_OBS_HIST = 5            # encoder 历史帧数
 WYW_POLICY_HIST_DIM = WYW_POLICY_OBS_DIM * WYW_NUM_OBS_HIST  # 125
-WYW_CRITIC_DIM = 46             # 拼 latent 前的特权观测维（见文件头布局）
+WYW_N_SCAN = 77                 # 地形高度扫描点数（fudan 11×7；dot_scanner size=(1.0,0.6) res=0.1）
+WYW_HEIGHT_SCALE = 5.0          # 高度扫描 obs 缩放（fudan height_measurements=5.0）
+WYW_CRITIC_DIM = 141            # 拼 latent 前的特权观测维（= fudan privileged_obs，见文件头布局）
 WYW_LATENT_DIM = 3              # encoder latent（隐式基座线速度估计）
 
 # ---------------------------------------------------------------------------- #

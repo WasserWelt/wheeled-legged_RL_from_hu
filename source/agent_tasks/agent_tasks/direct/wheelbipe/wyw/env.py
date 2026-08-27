@@ -53,6 +53,10 @@ class WheelbipeWywEnv(WheelbipeV14Env):
             dtype=torch.float,
             device=self.device,
         )
+        # critic 特权项索引 / 基准：base_link 体索引 + 未随机化的默认关节位（用于 DR 偏差项）。
+        base_idx, _ = self.robot.find_bodies("base_link")
+        self._wyw_base_body_idx = int(base_idx[0]) if len(base_idx) else 0
+        self._wyw_nominal_default_dof = self.robot.data.default_joint_pos[:, self._actuate_idx].clone()
         self._wyw_buffers_ready = True
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
@@ -90,26 +94,75 @@ class WheelbipeWywEnv(WheelbipeV14Env):
         )
         return torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
 
-    def _build_wyw_critic_obs(self) -> torch.Tensor:
-        """fudan critic 特权观测（46 维，拼 latent 前）。base_lin_vel 必须是前 3 维。"""
-        leg = C.WYW_LEG_DIM
-        cmd = self._get_wyw_command_block()
-        leg_pos_dev = (self.joint_pos - self.default_joint_pos)[:, self._legs_act_idx]
-        dof_vel = self.joint_vel[:, self._actuate_idx]
+    def _build_wyw_priv_dr_obs(self) -> torch.Tensor:
+        """fudan critic 尾部的域随机化特权块（12 维，未做 obs 缩放，与 fudan 一致）。
+
+        组成：base_mass_dev(1) + base_com(3) + default_dof_delta(6) + friction(1) + restitution(1)。
+        对应 fudan 的 (base_mass-mean) / base_com / (default_dof_pos-raw) / friction_coef /
+        restitution_coef。from_hu 若某项未随机化（如 default_dof）则该段恒为 0，仅占位保维度。
+        """
+        n = self.num_envs
+        base_idx = self._wyw_base_body_idx
+
+        # base_mass 偏差 = 当前质量 − 默认（未随机化）质量
+        masses = self._get_body_masses_tensor()
+        default_mass = getattr(self.robot.data, "default_mass", None)
+        if masses is not None and default_mass is not None:
+            default_mass = torch.as_tensor(default_mass, dtype=torch.float, device=self.device)
+            if default_mass.shape != masses.shape:
+                default_mass = default_mass.expand_as(masses)
+            base_mass_dev = (masses - default_mass)[:, base_idx].reshape(n, 1)
+        else:
+            base_mass_dev = torch.zeros(n, 1, dtype=torch.float, device=self.device)
+
+        # base_com（体坐标系下质心，DR 会平移）
+        body_com = getattr(self.robot.data, "body_com_pos_b", None)
+        if body_com is not None:
+            base_com = body_com[:, base_idx, :].reshape(n, 3)
+        else:
+            base_com = torch.zeros(n, 3, dtype=torch.float, device=self.device)
+
+        # default_dof 偏差（from_hu 通常不随机化 → 0；捕获一次 nominal 后作差，随机化则自动有效）
+        default_dof_delta = (
+            self.robot.data.default_joint_pos[:, self._actuate_idx] - self._wyw_nominal_default_dof
+        )
+
+        # 摩擦 / 恢复系数：material_properties = [static_friction, dynamic_friction, restitution]
+        material = self._get_body_material_tensor()
+        if material is not None and material.ndim >= 3 and material.shape[-1] >= 3:
+            friction = material[..., 0].mean(dim=1, keepdim=True)
+            restitution = material[..., 2].mean(dim=1, keepdim=True)
+        else:
+            friction = torch.zeros(n, 1, dtype=torch.float, device=self.device)
+            restitution = torch.zeros(n, 1, dtype=torch.float, device=self.device)
+
+        dr = torch.cat(
+            [base_mass_dev, base_com, default_dof_delta, friction, restitution],  # 1+3+6+1+1=12
+            dim=-1,
+        )
+        return torch.nan_to_num(dr, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _build_wyw_critic_obs(self, policy_obs: torch.Tensor) -> torch.Tensor:
+        """fudan critic 特权观测（141 维，拼 latent 前）。base_lin_vel 必须是前 3 维。
+
+        逐段对齐 fudan ``privileged_obs_buf``：
+        base_lin_vel(3) + obs_buf(25=policy 本体) + prev_actions(6) + before_prev_actions(6)
+        + joint_acc(6) + heights(77) + torque(6) + DR 特权(12)。
+        """
+        base_lin_vel = self.robot.data.root_lin_vel_b * self.cfg.wyw_lin_vel_scale  # 3 (encoder 监督目标)
         joint_acc = self.robot.data.joint_acc[:, self._actuate_idx]
         torque = self.robot.data.applied_torque[:, self._actuate_idx]
+        heights = self._get_scan_dot_obs()  # 77（已 ×height_scale，_pad_flat_features 保证 = n_scan）
         critic = torch.cat(
             [
-                self.robot.data.root_lin_vel_b * self.cfg.wyw_lin_vel_scale,     # 3  (encoder 监督目标)
-                self.robot.data.root_ang_vel_b * self.cfg.wyw_ang_vel_scale,     # 3
-                self.robot.data.projected_gravity_b * self.cfg.wyw_proj_gravity_scale,  # 3
-                cmd,                                                         # 3
-                leg_pos_dev * self.cfg.wyw_joint_pos_scale,                  # 4
-                dof_vel * self.cfg.wyw_dof_vel_scale,                        # 6
-                self._actions * self.cfg.wyw_action_scale,                   # 6
-                self._before_previous_actions * self.cfg.wyw_action_scale,   # 6
+                base_lin_vel,                                                # 3
+                policy_obs,                                                  # 25 (= fudan obs_buf)
+                self._previous_actions * self.cfg.wyw_action_scale,          # 6  (last_actions[:,:,0])
+                self._before_previous_actions * self.cfg.wyw_action_scale,   # 6  (last_actions[:,:,1])
                 joint_acc * self.cfg.wyw_joint_acc_scale,                    # 6
+                heights,                                                     # 77
                 torque * self.cfg.wyw_torque_scale,                          # 6
+                self._build_wyw_priv_dr_obs(),                               # 12
             ],
             dim=-1,
         )
@@ -128,7 +181,7 @@ class WheelbipeWywEnv(WheelbipeV14Env):
 
         observations["policy"] = policy
         observations["policy_hist"] = policy_hist
-        observations["critic"] = self._build_wyw_critic_obs()
+        observations["critic"] = self._build_wyw_critic_obs(policy)
         # 清理基类可能残留的、维度与 wyw 不一致的 critic 相关键，避免下游误用
         observations.pop("prev_critic", None)
         observations.pop("critic_hist", None)
