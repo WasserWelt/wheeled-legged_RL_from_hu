@@ -121,6 +121,57 @@ class DreamWaqPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
+class SequencePPORunnerCfg(RslRlOnPolicyRunnerCfg):
+    """fudan ActorCriticSequence 三元组的 runner 配置。
+
+    - ``runner_class`` / ``class_name`` 用字符串指向新增的
+      ``OnPolicySequenceRunner`` / ``ActorCriticSequence`` / ``PPOSequence``。
+    - ``latent_dim=3``：encoder 输出的隐式基座线速度 latent 维度（被算法侧监督为
+      critic_obs[:, :3]，并拼进 critic 观测）。
+    - 超参对齐 fudan：actor [128,64,32] / critic [256,128,64] / encoder [128,64]，
+      ELU，init_noise_std 0.5，num_steps_per_env 48。
+    """
+
+    runner_class = "OnPolicySequenceRunner"
+    num_steps_per_env = 48
+    max_iterations = 20000
+    save_interval = 500
+    experiment_name = "sequence_flat_direct"
+
+    policy = dict(
+        class_name="ActorCriticSequence",
+        latent_dim=3,
+        init_noise_std=0.5,
+        encoder_hidden_dims=[128, 64],
+        actor_hidden_dims=[128, 64, 32],
+        critic_hidden_dims=[256, 128, 64],
+        activation="elu",
+        orthogonal_init=False,
+    )
+    algorithm = dict(
+        class_name="PPOSequence",
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.01,
+        num_learning_epochs=5,
+        num_mini_batches=4,  # mini batch size = num_envs*nsteps / nminibatches
+        learning_rate=1.0e-3,
+        extra_learning_rate=1.0e-3,  # encoder（隐式线速度估计器）单独优化器
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.005,
+        max_grad_norm=1.0,
+    )
+
+
+@configclass
+class WheelbipeWywPPORunnerCfg(SequencePPORunnerCfg):
+    experiment_name = "wheelbipe_v14_wyw_flat_direct"
+
+
+@configclass
 class HIMPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     runner_class = "OnPolicyHIMRunner"
     num_steps_per_env = 24

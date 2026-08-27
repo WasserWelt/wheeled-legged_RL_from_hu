@@ -13,3 +13,8 @@ python scripts/tools/step_to_stl.py RMUC2026_V2.0.0.stp assets/rmuc2026.stl --pr
 # 可视化旦的模型
 cd /home/wyw/my_tasks/RL_2026/fudan_rl_wheel_leg/mujoco/assert_now/infantry_binglian_yuntai/infantry_V2/meshes/
 DISPLAY=:1 python -m mujoco.viewer --mjcf=mjmodel.xml
+
+cd /home/wyw/my_tasks/RL_2026/wheeled-legged_RL_from_hu 
+source ~/anaconda3/etc/profile.d/conda.sh 
+conda activate isaaclab_2 
+python scripts/rsl_rl/train.py --task=Robotics-Wheelbipe-V14-wyw-Flat-v1 --num_envs=1 --max_iterations=3
