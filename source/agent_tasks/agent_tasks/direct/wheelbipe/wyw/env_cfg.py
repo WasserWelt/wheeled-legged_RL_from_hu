@@ -35,12 +35,12 @@ from isaaclab.utils.noise import NoiseModelCfg, UniformNoiseCfg
 
 import agent_tasks.manager.mdp.isaaclab as mdp
 from agent_tasks.direct.wheelbipe.wheelbipe25_v3.env_cfg import Wheelbipe25v3FlatEnvCfg, EventCfg
-from agent_tasks.direct.wheelbipe.wheelbipe_V14.cfg_utils import _apply_v14_rough_runtime_cfg
 from agent_world.assets.wheelbipe_fdu import Wheelbipe_FDU_CFG
 from agent_world import AssetPath
 
 from . import wyw_constants as C
 from .fdu_mapping import POLICY_JOINT_NAMES
+from .rough_cfg import FDU_ROUGH_TERRAIN_CFG
 
 
 FDU_PLANE_REWARDS = OrderedDict(
@@ -198,8 +198,8 @@ def _apply_wyw_common(cfg) -> None:
     # observation_space 原样交给 spec_to_gym_space —— 传 dict 会被整体嵌套进
     # single_observation_space["policy"]（各子键 flatdim 相加），从而丢失 policy_hist
     # 顶层键。故这里用 int：
-    #   single_observation_space = {policy: Box(25), critic: Box(46)}
-    #   → 自定义 wrapper: num_observations={policy:25, critic:46}, num_privileged_obs=46
+    #   single_observation_space = {policy: Box(25), critic: Box(141)}
+    #   → 自定义 wrapper: num_observations={policy:25, critic:141}, num_privileged_obs=141
     #   → runner 对 policy_hist 回落到 num_obs_hist * num_obs = 5*25 = 125（=encoder 输入）。
     cfg.observation_space = C.WYW_POLICY_OBS_DIM
     cfg.state_space = C.WYW_CRITIC_DIM
@@ -225,16 +225,18 @@ def _apply_wyw_common(cfg) -> None:
         cfg.left_wheel_height_scanner = copy.deepcopy(cfg.left_wheel_height_scanner)
         cfg.left_wheel_height_scanner.prim_path = "/World/envs/env_.*/Robot/l_wheel_Link"
 
-    # 命令：收敛到 fudan locomotion 范围，关闭 spin/dash 特殊模式
+    # 命令：直接采样 yaw-rate；各任务在自己的 __post_init__ 中设置 vx 和周期。
+    cfg.commands = copy.deepcopy(cfg.commands)
+    cfg.commands.heading_command = False
+    cfg.commands.rel_heading_envs = 0.0
+    cfg.commands.rel_standing_envs = 0.0
+    cfg.commands.resampling_time_range = (5.0, 5.0)
+    cfg.commands.debug_vis = bool(getattr(cfg, "play", False))
     ranges = getattr(cfg.commands, "ranges", None)
     if ranges is not None:
-        ranges.lin_vel_x = (-2.1, 2.1)
+        ranges.lin_vel_x = (-2.0, 2.0)
         ranges.lin_vel_y = (0.0, 0.0)
         ranges.ang_vel_z = (-2.0, 2.0)
-    special_modes = getattr(cfg.commands, "special_modes", None)
-    if special_modes:
-        for mode in special_modes.values():
-            mode.rel_envs = 0.0
 
     # 高度命令区间锁死为当前 FDU 任务配置（rough helper 可能改写，故这里强制回来）
     cfg.height_range = [0.20, 0.42]
@@ -259,6 +261,16 @@ class FduEventCfg(EventCfg):
     add_base_mass = None
     add_leg_mass = None
     add_wheel_mass = None
+    reset_base = EventTerm(
+        func=mdp.reset_root_state_uniform_vel_b,
+        mode="reset",
+        params={
+            "pose_range": {},
+            "velocity_range": {
+                axis: (-0.5, 0.5) for axis in ("x", "y", "z", "roll", "pitch", "yaw")
+            },
+        },
+    )
     base_com = EventTerm(
         func=randomize_fdu_base_com,
         mode="startup",
@@ -369,6 +381,22 @@ class FduJumpEventCfg(FduEventCfg):
 
 
 @configclass
+class FduRoughEventCfg(FduEventCfg):
+    """Fudan rough reset: random XY within one metre of the terrain tile origin."""
+
+    reset_base = EventTerm(
+        func=mdp.reset_root_state_uniform_vel_b,
+        mode="reset",
+        params={
+            "pose_range": {"x": (-1.0, 1.0), "y": (-1.0, 1.0)},
+            "velocity_range": {
+                axis: (-0.5, 0.5) for axis in ("x", "y", "z", "roll", "pitch", "yaw")
+            },
+        },
+    )
+
+
+@configclass
 class FduPlayEventCfg(FduEventCfg):
     base_com = None
     physics_material = None
@@ -447,17 +475,23 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
 
     # 跳跃奖励注入开关（Flat/Rough 关闭）
     wyw_jump_enabled = False
+    wyw_rough_curriculum_enabled = False
 
     def __post_init__(self):
         super().__post_init__()
         _apply_wyw_common(self)
+        self.scene.num_envs = 4096
+        self.commands.ranges.lin_vel_x = (-2.0, 2.0)
+        self.commands.resampling_time_range = (5.0, 5.0)
 
 
 @configclass
 class WheelbipeWywRoughEnvCfg(WheelbipeWywFlatEnvCfg):
     """wyw Rough：trimesh 地形 + 课程，obs/reward/网络与 Flat 共享。"""
 
-    rough_terrain_generator_cfg = copy.deepcopy(mdp.RM_ROTATION_TERRAINS_CFG_99)
+    events = FduRoughEventCfg()
+    wyw_rough_curriculum_enabled = True
+    rough_terrain_generator_cfg = copy.deepcopy(FDU_ROUGH_TERRAIN_CFG)
     rough_terrain_boundary_reset_cfg = {
         "enabled": True,
         "margin": 0.5,
@@ -466,10 +500,22 @@ class WheelbipeWywRoughEnvCfg(WheelbipeWywFlatEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        # 复用 V14 的 rough 运行时配置（swap 到 generator 地形、启用高度扫描/状态机、课程）
-        _apply_v14_rough_runtime_cfg(self)
-        # rough helper 可能改动扫描/状态机，但不动 obs dict；再强制一次 wyw 形状与频率
+        # 这里只复用 generator 作为当前的 rough 几何载体，不引入 V14 的
+        # airborne/forward-scan 状态机、特殊命令覆盖或 iteration 课程。
+        self.terrain = copy.deepcopy(self.terrain)
+        self.terrain.terrain_type = "generator"
+        self.terrain.terrain_generator = copy.deepcopy(self.rough_terrain_generator_cfg)
+        self.terrain.terrain_generator.curriculum = True
+        self.terrain.max_init_terrain_level = 5
+        self.enable_state_machines = False
+        self.airborne_state_machine_cfg = copy.deepcopy(self.airborne_state_machine_cfg)
+        self.airborne_state_machine_cfg["enabled"] = False
+        self.wheel_forward_scan_cfg = copy.deepcopy(self.wheel_forward_scan_cfg)
+        self.wheel_forward_scan_cfg["enabled"] = False
+        self.terrain_command_overrides = {}
         _apply_wyw_common(self)
+        self.commands.ranges.lin_vel_x = (-2.0, 2.0)
+        self.commands.resampling_time_range = (5.0, 5.0)
 
 
 @configclass
@@ -490,7 +536,11 @@ class WheelbipeWywJumpEnvCfg(WheelbipeWywFlatEnvCfg):
         self.robot_cfg = copy.deepcopy(self.robot_cfg)
         self.robot_cfg.actuators["legs_act"].stiffness = 6.0
         self.robot_cfg.actuators["legs_act"].damping = 0.5
+        self.robot_cfg.actuators["wheel"].effort_limit = 50.0
         self.rewards = copy.deepcopy(FDU_JUMP_REWARDS)
+        self.scene.num_envs = 4096
+        self.commands.ranges.lin_vel_x = (-2.1, 2.1)
+        self.commands.resampling_time_range = (20.0, 20.0)
 
 
 # ---------------------------------------------------------------------------- #

@@ -170,21 +170,21 @@ class SequencePPORunnerCfg(RslRlOnPolicyRunnerCfg):
 class WheelbipeWywPPORunnerCfg(SequencePPORunnerCfg):
     """wyw 共享 runner（Flat 用）。三任务共享 Actor/Critic/PPO 超参，仅 experiment_name 分开。"""
 
-    experiment_name = "wheelbipe_v14_wyw_flat_direct"
+    experiment_name = "wheelbipe_fdu_wyw_flat_direct"
 
 
 @configclass
 class WheelbipeWywRoughPPORunnerCfg(WheelbipeWywPPORunnerCfg):
     """wyw Rough：仅日志目录名与 Flat 分开，超参完全继承。"""
 
-    experiment_name = "wheelbipe_v14_wyw_rough_direct"
+    experiment_name = "wheelbipe_fdu_wyw_rough_direct"
 
 
 @configclass
 class WheelbipeWywJumpPPORunnerCfg(WheelbipeWywPPORunnerCfg):
     """wyw Jump：仅日志目录名与 Flat 分开，超参完全继承。"""
 
-    experiment_name = "wheelbipe_v14_wyw_jump_direct"
+    experiment_name = "wheelbipe_fdu_wyw_jump_direct"
 
 
 @configclass

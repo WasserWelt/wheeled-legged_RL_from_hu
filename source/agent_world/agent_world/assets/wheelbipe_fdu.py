@@ -94,7 +94,10 @@ Wheelbipe_FDU_CFG = ArticulationCfg(
             joint_names_expr=[".*_wheel_Joint"],
             stiffness=0.0,
             damping=0.2,
-            effort_limit=30.0,
+            # Fudan Plane training clamps wheel torque at 5 N m. Jump's
+            # training URDF uses 50 N m and overrides this in its env cfg.
+            # (The 5/4 N m sim2sim/deployment clamps are a separate stage.)
+            effort_limit=5.0,
             # The Fudan controller has no wheel-speed clamp: it applies a
             # torque-limited velocity error. 60 rad/s covers its command range
             # on the 0.06 m wheels while keeping this target-control adapter

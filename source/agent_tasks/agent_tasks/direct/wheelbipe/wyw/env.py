@@ -74,9 +74,15 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self._wheel_link_count = len(self._wheel_link_idx)
         self._desired_contact_link_idx = self._find_contact_sensor_indices(["[lr]_wheel_Link"])
         self._reset_contact_link_idx = self._find_contact_sensor_indices(["base_link_del"])
-        self._undesired_contact_link_idx = self._find_contact_sensor_indices(
-            ["base_link_del", "[lr]f[01]_Link", "[lr]2[0-3]_Link"]
-        )
+        if bool(getattr(self.cfg, "wyw_jump_enabled", False)):
+            self._undesired_contact_link_idx = self._find_contact_sensor_indices(
+                ["base_link_del", "[lr]f[01]_Link", "[lr]2[0-3]_Link"]
+            )
+        else:
+            # Fudan Plane has penalize_contacts_on=[]; keep the configured
+            # collision reward term for logging compatibility, but its raw
+            # value must remain exactly zero.
+            self._undesired_contact_link_idx = []
         self._invalidate_step_caches()
         self.static_priv_obs = self._get_static_priv_obs()
         self._wyw_buffers_ready = False
@@ -127,14 +133,19 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         base_idx, _ = self.robot.find_bodies("base_link_del")
         self._wyw_base_body_idx = int(base_idx[0]) if len(base_idx) else 0
         self._wyw_nominal_default_dof = self.robot.data.default_joint_pos[:, self._actuate_idx].clone()
+        self._wyw_command_ranges_x = torch.tensor(
+            self.cfg.commands.ranges.lin_vel_x, dtype=torch.float, device=self.device
+        ).repeat(self.num_envs, 1)
         self._wyw_buffers_ready = True
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         reset_env_ids = self._as_env_ids_tensor(env_ids)
+        self._update_fdu_rough_curriculum(reset_env_ids)
         super()._reset_idx(env_ids)
         self._ensure_wyw_buffers()
         self._wyw_obs_hist[reset_env_ids] = 0.0
         self._wyw_history_needs_fill[reset_env_ids] = True
+        self._sample_wyw_lin_vel_command(reset_env_ids)
         self._clear_termination_duration_buffers(
             reset_env_ids,
             counter_attr="_wyw_orientation_termination_counter",
@@ -226,7 +237,12 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         )
         return torch.nan_to_num(dr, nan=0.0, posinf=0.0, neginf=0.0)
 
-    def _build_wyw_critic_obs(self, policy_obs: torch.Tensor) -> torch.Tensor:
+    def _build_wyw_critic_obs(
+        self,
+        policy_obs: torch.Tensor,
+        previous_actions: torch.Tensor | None = None,
+        before_previous_actions: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         """fudan critic 特权观测（141 维，拼 latent 前）。base_lin_vel 必须是前 3 维。
 
         逐段对齐 fudan ``privileged_obs_buf``：
@@ -237,12 +253,16 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         joint_acc = self.robot.data.joint_acc[:, self._actuate_idx]
         torque = self.robot.data.applied_torque[:, self._actuate_idx]
         heights = self._get_fdu_height_scan_obs()
+        previous_actions = self._previous_actions if previous_actions is None else previous_actions
+        before_previous_actions = (
+            self._before_previous_actions if before_previous_actions is None else before_previous_actions
+        )
         critic = torch.cat(
             [
                 base_lin_vel,                                                # 3
                 policy_obs,                                                  # 25 (= fudan obs_buf)
-                self._previous_actions,                                      # 6  (last_actions[:,:,0]，不缩放)
-                self._before_previous_actions,                               # 6  (last_actions[:,:,1]，不缩放)
+                previous_actions,                                            # 6  (a_{t-1}，不缩放)
+                before_previous_actions,                                     # 6  (a_{t-2}，不缩放)
                 joint_acc * self.cfg.wyw_joint_acc_scale,                    # 6
                 heights,                                                     # 77
                 torque * self.cfg.wyw_torque_scale,                          # 6
@@ -273,6 +293,11 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         return self.robot.data.root_pos_w[:, 2] - mean_z
 
     def _get_observations(self) -> dict:
+        # The V3 base advances its two action-history tensors inside
+        # _get_observations(). Snapshot them first so the WYW critic retains
+        # Fudan's [a_{t-1}, a_{t-2}] contract while policy still sees a_t.
+        previous_actions = self._previous_actions.clone()
+        before_previous_actions = self._before_previous_actions.clone()
         # 先跑基类：触发全部有状态副作用（obs 延迟副本、命令刷新、地面高度估计、历史 deque 等）
         observations = super()._get_observations()
         self._ensure_wyw_buffers()
@@ -290,7 +315,9 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
 
         observations["policy"] = policy
         observations["policy_hist"] = policy_hist
-        observations["critic"] = self._build_wyw_critic_obs(clean_policy)
+        observations["critic"] = self._build_wyw_critic_obs(
+            clean_policy, previous_actions, before_previous_actions
+        )
         # 清理基类可能残留的、维度与 wyw 不一致的 critic 相关键，避免下游误用
         observations.pop("prev_critic", None)
         observations.pop("critic_hist", None)
@@ -396,12 +423,12 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         action_delta = self._actions - self._previous_actions
         action_second = self._actions - 2.0 * self._previous_actions + self._before_previous_actions
 
-        hard_limits = self.robot.data.joint_pos_limits[:, self._actuate_idx]
+        hard_limits = self.robot.data.joint_pos_limits[:, self._wyw_leg_joint_idx]
         centers = 0.5 * (hard_limits[..., 0] + hard_limits[..., 1])
         half_ranges = 0.5 * (hard_limits[..., 1] - hard_limits[..., 0])
         soft_lower = centers - 0.97 * half_ranges
         soft_upper = centers + 0.97 * half_ranges
-        positions = self.robot.data.joint_pos[:, self._actuate_idx]
+        positions = self.robot.data.joint_pos[:, self._wyw_leg_joint_idx]
         pos_limit_penalty = torch.sum(
             torch.clamp(soft_lower - positions, min=0.0)
             + torch.clamp(positions - soft_upper, min=0.0),
@@ -451,6 +478,11 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
 
     def _get_rewards(self) -> torch.Tensor:
         """Aggregate the exact WYW/Fudan terms using the base bookkeeping contract."""
+        # Fudan resamples commands in _post_physics_step_callback before
+        # termination/reward computation, so a boundary step is scored against
+        # the newly sampled command. DirectRLEnv does not own a command manager;
+        # advance ours here to preserve that ordering.
+        self._advance_fdu_commands()
         reward_terms = self._postprocess_reward_terms(self._compute_fdu_reward_terms())
         rewards = {
             key: self.cfg.rewards[key] * reward_terms.get(key, torch.zeros(self.num_envs, device=self.device)) * self.step_dt
@@ -473,6 +505,9 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             self._episode_sums[key] += value
         total_reward = torch.stack([rewards[key] for key in self.cfg.rewards], dim=-1).sum(dim=-1)
         self._last_total_reward = total_reward.detach()
+        return torch.nan_to_num(total_reward, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _advance_fdu_commands(self) -> None:
         sync_cmd_iteration = getattr(self, "_sync_command_generator_training_iteration", None)
         if sync_cmd_iteration is not None:
             sync_cmd_iteration()
@@ -481,7 +516,69 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self.command = self.command_generator.command.clone()
         self._on_command_updated()
         self._apply_predefined_reset_air_command_limits()
-        return torch.nan_to_num(total_reward, nan=0.0, posinf=0.0, neginf=0.0)
+
+    def _sample_wyw_lin_vel_command(self, env_ids: torch.Tensor) -> None:
+        if env_ids.numel() == 0 or not hasattr(self, "_wyw_command_ranges_x"):
+            return
+        ranges = self._wyw_command_ranges_x[env_ids]
+        values = ranges[:, 0] + torch.rand(env_ids.numel(), device=self.device) * (ranges[:, 1] - ranges[:, 0])
+        self.command_generator.vel_command_b[env_ids, 0] = values
+
+    def _resample_custom_cmd(self, command_counter: torch.Tensor):
+        resampled = super()._resample_custom_cmd(command_counter)
+        self._sample_wyw_lin_vel_command(resampled)
+        return resampled
+
+    def _update_fdu_rough_curriculum(self, env_ids: torch.Tensor) -> None:
+        """Apply Fudan's episode-performance terrain/command curriculum on reset."""
+        if not bool(getattr(self.cfg, "wyw_rough_curriculum_enabled", False)):
+            return
+        if env_ids.numel() == 0 or not getattr(self, "_wyw_buffers_ready", False):
+            return
+        terrain = self.terrain
+        if getattr(terrain, "terrain_origins", None) is None:
+            return
+
+        origins = terrain.env_origins[env_ids]
+        distance = torch.linalg.vector_norm(self.robot.data.root_pos_w[env_ids, :2] - origins[:, :2], dim=-1)
+        tracking_sum = self._episode_sums.get("tracking_lin_vel")
+        if tracking_sum is None:
+            return
+        tracking_rate = tracking_sum[env_ids] / max(float(self.max_episode_length_s), 1.0e-6)
+        move_up = distance > (float(terrain.cfg.terrain_generator.size[0]) / 4.0)
+        move_down = (tracking_rate < 0.4) & (~move_up)
+
+        old_levels = terrain.terrain_levels[env_ids].clone()
+        candidate_levels = old_levels + move_up.long() - move_down.long()
+        success = candidate_levels >= int(terrain.max_terrain_level)
+        failure = candidate_levels < 0
+        terrain.update_env_origins(env_ids, move_up, move_down)
+
+        # Fudan narrows failed ranges towards [-1, 1]. Successful terrains
+        # expand by 0.05, with an additional 0.45 for basic terrain classes.
+        failed_ids = env_ids[failure]
+        if failed_ids.numel() > 0:
+            self._wyw_command_ranges_x[failed_ids, 0] = torch.clamp(
+                self._wyw_command_ranges_x[failed_ids, 0] + 0.25, min=-2.5, max=-1.0
+            )
+            self._wyw_command_ranges_x[failed_ids, 1] = torch.clamp(
+                self._wyw_command_ranges_x[failed_ids, 1] - 0.25, min=1.0, max=2.5
+            )
+
+        successful_ids = env_ids[success & (tracking_rate > 0.7)]
+        if successful_ids.numel() > 0:
+            terrain_types = terrain.terrain_types[successful_ids]
+            # Named generator column layout: 0:4 flat, 4:8 smooth,
+            # 8:12 rough, 12:14 down stairs, 14:18 up stairs, 18:20 obstacles.
+            basic = terrain_types < 14
+            delta = torch.where(basic, 0.5, 0.05)
+            max_abs = torch.where(basic, 2.5, 1.5)
+            self._wyw_command_ranges_x[successful_ids, 0] = torch.maximum(
+                self._wyw_command_ranges_x[successful_ids, 0] - delta, -max_abs
+            )
+            self._wyw_command_ranges_x[successful_ids, 1] = torch.minimum(
+                self._wyw_command_ranges_x[successful_ids, 1] + delta, max_abs
+            )
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Use Fudan's persisted tilt failure while retaining numerical safety."""

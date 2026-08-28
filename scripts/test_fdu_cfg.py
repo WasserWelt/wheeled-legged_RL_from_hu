@@ -48,6 +48,7 @@ def main():
     wheel_actuator = robot.actuators["wheel"]
     assert wheel_actuator.cfg.velocity_limit == 60.0
     assert wheel_actuator.cfg.velocity_limit_sim == 60.0
+    assert wheel_actuator.cfg.effort_limit == 5.0
     for joint_name in ("l_wheel_Joint", "r_wheel_Joint"):
         joint_index = robot.joint_names.index(joint_name)
         joint_velocity_limit = float(robot.data.joint_vel_limits[0, joint_index])
@@ -56,7 +57,7 @@ def main():
             60.0,
             rel_tol=1.0e-6,
         ), f"{joint_name} velocity limit is {joint_velocity_limit}, expected 60.0"
-    lines.append("wheel velocity limit: asset=60.0 rad/s, runtime joint limit=60.0 rad/s")
+    lines.append("wheel limits: velocity=60.0 rad/s, Plane training effort=5.0 N*m")
     lines.append("ALL ACTUATOR GROUPS RESOLVED OK")
     lines.append("=" * 60)
     for ln in lines:

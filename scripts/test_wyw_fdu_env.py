@@ -50,6 +50,13 @@ def main():
         assert env.max_wheel_vel == 60.0
         assert env.robot.cfg.actuators["wheel"].velocity_limit == 60.0
         assert env.robot.cfg.actuators["wheel"].velocity_limit_sim == 60.0
+        expected_wheel_effort = 50.0 if args_cli.variant == "jump" else 5.0
+        assert env.robot.cfg.actuators["wheel"].effort_limit == expected_wheel_effort
+        assert env.cfg.commands.heading_command is False
+        assert env.cfg.commands.rel_heading_envs == 0.0
+        assert env.cfg.commands.rel_standing_envs == 0.0
+        expected_command_period = (20.0, 20.0) if args_cli.variant == "jump" else (5.0, 5.0)
+        assert tuple(env.cfg.commands.resampling_time_range) == expected_command_period
         obs, _ = env.reset()
         assert obs["policy"].shape == (1, 25)
         assert obs["policy_hist"].shape == (1, 125)
@@ -69,7 +76,8 @@ def main():
         print(f"wheel_entity_indices={env._wyw_wheel_joint_idx}")
         print(
             f"wheel_velocity_limit={env.robot.cfg.actuators['wheel'].velocity_limit} rad/s "
-            f"runtime_clamp={env.max_wheel_vel} rad/s"
+            f"runtime_clamp={env.max_wheel_vel} rad/s "
+            f"training_effort_limit={expected_wheel_effort} N*m"
         )
     finally:
         env.close()

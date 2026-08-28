@@ -120,6 +120,10 @@ Fudan 最大前进命令 2.1 m/s 对应 35 rad/s；最大偏航命令 2 rad/s、
 配置 `max_wheel_vel` 和运行时 clamp 必须同时保持为 `60 rad/s`。这是 adapter 兼容边界，不是由
 `clip_actions=100` 推算的 Fudan 硬限制。
 
+轮力矩上限按**训练**配置取值：Flat/Rough 为 `5 N·m`，Jump 为 `50 N·m`。这里不能混用后续阶段的
+限制：闭链 MuJoCo 常规 sim2sim 代码把轮力矩裁到 `5 N·m`，真实部署又把 Jump 单独裁到 `4 N·m`；
+后两者都是策略训练完成后的执行保护，不是当前 Isaac Lab Jump 训练上限。
+
 ### 2.2 虚拟腿几何
 
 Fudan 的 `L0`、`theta0` 是腿根到轮中心的虚拟杆长度和机身系摆角。FDU 为五连杆闭链，WYW 从
