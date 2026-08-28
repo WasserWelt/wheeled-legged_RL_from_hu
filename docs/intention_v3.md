@@ -1,6 +1,6 @@
 # wyw 任务族迁移设计（intention_v3）
 
-> 状态：目标设计，供后续实现和验收使用。
+> 状态：迁移基线已实现；下文同时记录目标契约、已完成验收和未完成的长训/几何标定项。
 >
 > 本文取代 `intention_v2.md` 作为 wyw 任务族的设计权威；`intention_v2.md` 保留为历史记录。
 > [`wyw_config_table.md`](./wyw_config_table.md) 是 2026-08-27 的 as-built 快照，只用于比较当前实现与
@@ -613,12 +613,33 @@ level += move_up - move_down
 3. 观测：Flat/Rough/Jump 均为 policy 25、history 125、critic 141；扫描非空且公式用 root z。
 4. 材料：验证 terrain/robot combine mode 和 critic 中保存的 sample 一致。
 5. Reset/termination：通过人工设置状态验证 1 秒倾倒宽限、20 秒 timeout 和 Rough boundary timeout。
-6. 冒烟：Flat、Rough、Jump 各 64 env、至少 3 iterations，无 NaN/shape error；这一步不能替代 golden tests。
+6. 冒烟目标：Flat、Rough、Jump 各 64 env、至少 3 iterations，无 NaN/shape error；这一步不能替代 golden tests。
 7. YAML 审计：确认无 heading/standing/special mode、无 obs/action delay、奖励集合和 clip 值准确，
    `height_range=[0.20,0.42]`、`height_cmd_scale=1.0`。
 
 验收不是“可以训练”或“曲线有上升”，而是上述张量、公式、时序和配置测试全部通过。之后才进入性能
 调参；性能调参产生的有意偏离必须以新配置版本记录，不回改迁移基线。
+
+### 11.3 当前验收记录（2026-08-28）
+
+| 项目 | 实际运行 | 结果 |
+| --- | --- | --- |
+| FDU asset 标定 | `scripts/test_fdu_cfg.py --headless` | 通过：14 DOF、15 刚体、状态有限 |
+| Flat GUI Play | `scripts/view_robot.py`，宿主 `DISPLAY=:1` | 通过：闭链显示、无明显振动 |
+| Flat PPO | 16 env、1 iteration、seed 42、非无头 | 通过：GPU/Vulkan、网络维度、loss/KL 有限 |
+| Rough 语义冒烟 | 4 env、headless、seed 42 | 通过：reset/obs/reward/termination fixture |
+| Rough PPO | 16 env、2 iterations、seed 42、非无头 | 通过：课程地形生成、网络维度、loss/KL 有限 |
+| Jump 语义冒烟 | 2 env、headless、seed 42、宿主 GPU | 通过：Jump reward、50 N m 轮力矩、20 s 命令周期 |
+| Jump PPO | 16 env、2 iterations、seed 42、非无头 | 通过：GPU/Vulkan、encoder/actor/critic、loss/KL 有限 |
+
+上述 PPO 运行均未出现 NaN/Inf 或崩溃；2 iterations 约覆盖 0.96 s，因而日志中的
+`terminate=0/time_out=0` 不能证明 1 s 姿态持续终止或 20 s timeout 已在自然 rollout 中触发。
+语义冒烟通过人工 fixture 单独验证了 100 个 policy step 的姿态持续终止和 timeout 边界。
+Rough 课程的跨 episode 晋级/降级仍需一次覆盖 reset 的长时运行；目标门槛“64 env、3 iterations”也尚未执行。
+
+运行环境说明：本代理沙箱没有 CUDA 设备，Jump headless 在沙箱内会报 `No CUDA GPUs are available`；
+同一命令在宿主 RTX 3070、`DISPLAY=:1`/CUDA 访问下已通过。PCIe 链宽、IOMMU、TGS velocity iterations、
+缺失 STL visual 子路径和 Direct RL manager visualizer warning 均未导致本次验收失败。
 
 ## 12. 已知风险和标定项
 

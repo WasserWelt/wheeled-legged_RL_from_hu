@@ -205,6 +205,15 @@ def _apply_wyw_common(cfg) -> None:
     cfg.state_space = C.WYW_CRITIC_DIM
     cfg.num_obs_hist = C.WYW_NUM_OBS_HIST
 
+    # The Fudan baseline has no V3/V14 runtime state machines. Disable the
+    # manager at its top-level gate for every WYW task, rather than relying on
+    # each currently-known child machine also happening to be disabled.
+    cfg.enable_state_machines = False
+    cfg.airborne_state_machine_cfg = copy.deepcopy(cfg.airborne_state_machine_cfg)
+    cfg.airborne_state_machine_cfg["enabled"] = False
+    cfg.wheel_forward_scan_cfg = copy.deepcopy(cfg.wheel_forward_scan_cfg)
+    cfg.wheel_forward_scan_cfg["enabled"] = False
+
     # fudan critic 含 11×7=77 维地形高度扫描（privileged）。启用基类 dot_scanner，
     # 并把网格改成 fudan 尺寸：x∈[-0.5,0.5] 步 0.1（11 点）、y∈[-0.3,0.3] 步 0.1（7 点）。
     # 三任务（含 plane 的 Flat/Jump）都挂扫描器——plane 上读到近平地（clip 后≈0），
