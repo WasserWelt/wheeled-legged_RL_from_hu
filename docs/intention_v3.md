@@ -231,7 +231,7 @@ DR 特权值必须来自事件随机化时保存的 per-env sample/source-of-tru
 
 ## 5. 命令
 
-命令固定为 `[vx, yaw_rate, height]`，无 `vy`、heading、standing env 和 special mode：
+迁移基线的命令固定为 `[vx, yaw_rate, height]`，无 `vy`、heading、standing env 和 special mode：
 
 ```text
 heading_command = False
@@ -253,6 +253,45 @@ Rough 命令课程复现 Fudan 的性能阈值和 basic/advanced terrain 分类�
 命令或地形升级条件。Flat 虽在 Fudan config 中写有 `commands.curriculum=True`，但 plane 会关闭 terrain
 curriculum，相关 terrain-dependent 路径不应在 WYW Flat 产生动态命令范围。
 
+### 5.1 当前实现、Fudan 与常用 V3 命令的区别
+
+| 项目 | Fudan 原训练 | 当前 WYW 迁移基线 | V3 常用配置 | 结论 |
+| ---- | ------------ | ----------------- | ----------- | ---- |
+| standing env | 无 | `0%` | `10%` | 有助于补足静止控制，但不是 Fudan 基线 |
+| heading control | 代码支持但配置关闭；若打开则 `yaw_rate=clip(1.5*heading_error,-5,5)` | 关闭，直接采样 `yaw_rate` | `50%` heading env，stiffness `1.0` | 可作为增强项，但目标分布和限幅必须重新明确 |
+| command 周期 | Plane/Rough `5 s`，Jump `20 s` | 与 Fudan 相同 | `1--8 s` | 第一版增强配置仍保留 `5/20 s`，不要同时改变多个变量 |
+| 前进/偏航命令 | 直接均匀采样 | 与 Fudan 相同 | heading env 的偏航由闭环生成 | heading 打开后，策略仍只观察最终 yaw-rate，不增加 actor 维度 |
+| 高度命令 | 始终采样 | 与 Fudan 相同 | 始终采样 | standing 只清零平面速度命令，高度命令继续有效 |
+
+### 5.2 未来命令增强变体（规划，当前不启用）
+
+我预计后续会加入独立的 `CommandResetAug` 训练变体，而不直接改写 Flat/Rough/Jump 的 Fudan 兼容基线。
+首个增强版本建议只加入：
+
+```text
+rel_standing_envs = 0.10
+heading_command = True
+rel_heading_envs = 0.50
+heading_range = [-pi, pi]
+heading_control_stiffness = 1.0
+effective_yaw_rate_limit = [-2, 2]
+Flat/Rough resampling_time = 5 s
+Jump resampling_time = 20 s
+```
+
+这里的 heading 闭环应先计算 wrap 后的 heading error，再把最终 yaw-rate 裁剪到现有 `[-2,2] rad/s`，以免
+在同一次实验中把任务定义扩展到 Fudan dormant code 的 `[-5,5] rad/s`。actor 仍接收最终
+`[vx,yaw_rate,height]`，不接收绝对 heading，因此 observation 的 25 维布局和已训练策略接口保持不变。
+
+standing env 的定义为 `vx=0, vy=0, yaw_rate=0`，但保留采样到的 height。standing mask 最后施加，优先于
+heading mask；两种 mask 即使重叠也不能产生非零 yaw-rate。Rough 的 command curriculum 统计应排除
+standing env，或分别记录 moving/standing tracking 指标，否则较容易的零速样本会虚高成功率并提前扩展
+速度范围。
+
+引入顺序固定为：先完成 Fudan 兼容基线验收，再仅打开 standing 做消融，最后加入 heading。增强配置使用
+独立 task ID、runner `experiment_name` 和 checkpoint 目录；至少分别记录 tracking、静止漂移、偏航误差、
+terrain level 和 reset 后恢复率。不能用增强实验覆盖迁移基线。
+
 ## 6. Reset 和 termination
 
 ### 6.1 Reset
@@ -270,6 +309,40 @@ curriculum，相关 terrain-dependent 路径不应在 WYW Flat 产生动态命�
 
 必须关闭 V3 继承的随机腿长/腿角、随机轮角和随机关节速度 reset。default joint randomization 属于域随机化，
 它先生成每环境默认位姿，reset 再精确写入该位姿；两者不能混为第二套 reset 姿态随机化。
+
+### 6.1.1 Reset 配置对比
+
+| 项目 | Fudan 原训练 | 当前 WYW 迁移基线 | V3 当前/常用做法 |
+| ---- | ------------ | ----------------- | ---------------- |
+| root XY | Flat/Jump 固定；Rough `[-1,1] m` | 相同 | 当前 V3 reset 未随机 XY；注释方案为 `[-0.5,0.5] m` |
+| root z 偏移 | 不随机 | 不随机 | 当前 V3 为相对默认位姿 `[0,0.1] m` |
+| roll/pitch/yaw | 不随机 | 不随机 | 当前 V3 为 roll/pitch `[-0.1,0.1] rad`、yaw `[-pi,pi]` |
+| root 线速度 | xyz 均为 `[-0.5,0.5] m/s` | 相同 | 当前 V3 仅 x/y 为 `[-0.5,0.5] m/s`，z 未随机 |
+| root 角速度 | xyz 均为 `[-0.5,0.5] rad/s` | 相同 | 当前 V3 未随机 |
+| 驱动关节位置 | randomized default position | 相同 | 可额外采样腿姿态、轮角或预定义恢复姿态 |
+| 所有关节速度 | `0` | `0` | 可随机，但当前迁移基线关闭 |
+
+因此“当前 WYW 有 reset 随机化”和“当前 WYW 关闭 V3 reset 扩展”并不矛盾：当前已启用的是 Fudan 的
+root 六维初速度随机化以及 Rough XY 随机化；关闭的是 root pose、额外关节姿态和关节速度随机化。
+
+### 6.1.2 未来 reset 增强变体（规划，当前不启用）
+
+建议按恢复难度逐级加入，且每一级都保持可单独关闭：
+
+1. `PoseResetMild`：在 Fudan 初速度随机化之上，加入 yaw `[-pi,pi]`、roll/pitch `[-0.1,0.1] rad` 和
+   相对默认 root z `[0,0.1] m`；Flat/Jump XY 仍固定，Rough 继续使用 `[-1,1] m`。
+2. `JointResetMild`：只对四个实体驱动杆添加小范围 reset offset，轮关节角可任意但轮速仍从 0 开始；范围需
+   在 FDU 闭链的无自碰、无装配冲击可行域标定后填写，不能直接复用 Fudan 两虚拟腿关节或 V3 串联腿范围。
+3. `RecoveryReset`：最后再加入趴倒、侧倒、预定义离地/落地等混合 reset。此阶段需同时定义各模式概率、
+   起始无力矩时间、临时 command 限制和成功判据，并与普通 locomotion reset 分开统计。
+
+增强 reset 必须继续保留 Fudan 的六维 root velocity 随机化，除非某个 recovery mode 明确覆写；不能在加入
+pose 随机化时意外退化成 V3 当前仅 x/y 速度随机。`default_dof_pos` 的 startup 域随机化与每次 episode 的
+joint reset offset 必须使用两个独立 sample，并分别保存供 critic/日志审计，避免重复随机化后无法还原来源。
+
+heading 与随机 yaw 应协同上线：reset 后 heading target 应以机器人当前 yaw 为参考采样或显式采样世界目标，
+不能沿用 reset 前的 target。Jump 在完成基线几何和 air-time bug 消融前，不启用 `RecoveryReset`，防止把
+reset 分布变化误判为跳跃奖励修复的效果。
 
 ### 6.2 Termination
 

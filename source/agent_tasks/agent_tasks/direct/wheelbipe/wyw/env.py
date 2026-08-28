@@ -568,9 +568,10 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         successful_ids = env_ids[success & (tracking_rate > 0.7)]
         if successful_ids.numel() > 0:
             terrain_types = terrain.terrain_types[successful_ids]
-            # Named generator column layout: 0:4 flat, 4:8 smooth,
-            # 8:12 rough, 12:14 down stairs, 14:18 up stairs, 18:20 obstacles.
-            basic = terrain_types < 14
+            # Reproduce Fudan's executable index sets exactly. Its variable
+            # names for the two stair ranges are reversed relative to the
+            # generated geometry: basic={0:12,14:18}, advanced={12:14,18:20}.
+            basic = (terrain_types < 12) | ((terrain_types >= 14) & (terrain_types < 18))
             delta = torch.where(basic, 0.5, 0.05)
             max_abs = torch.where(basic, 2.5, 1.5)
             self._wyw_command_ranges_x[successful_ids, 0] = torch.maximum(
