@@ -9,10 +9,10 @@
 #     Wasser_welt
 # =============================================================================
 
-"""wyw 任务族环境（fudan 设计移植，from_hu 本体）。
+"""wyw task family on the FDU closed-chain parallel-linkage robot.
 
 采用「扩展点」策略而非整体重写基类：
-- 复用 :class:`WheelbipeV14Env` 的全部物理 / 命令 / 复位副作用（``_get_observations``
+- 复用 :class:`Wheelbipe25V3Env` 的物理 / 命令 / 复位副作用（``_get_observations``
   里大量有状态副作用喂给下一步的 reward，必须保留）。
 - ``_get_observations``：先调 ``super()`` 触发全部副作用，再用 fudan 布局的张量覆写
   ``policy`` / ``critic`` / ``policy_hist`` 三个键。base_lin_vel 放 critic 前 3 维，供
@@ -31,13 +31,72 @@ from typing import Sequence
 
 import torch
 
-from agent_tasks.direct.wheelbipe.wheelbipe_V14.env import WheelbipeV14Env
+from agent_tasks.direct.wheelbipe.wheelbipe25_v3.env import Wheelbipe25V3Env
 
 from . import wyw_constants as C
+from .fdu_mapping import POLICY_JOINT_NAMES, update_buggy_fudan_airtime
 
 
-class WheelbipeWywEnv(WheelbipeV14Env):
-    """fudan 风格 Actor/Critic/Obs/Reward 的 wyw 环境（from_hu 本体）。"""
+class WheelbipeWywEnv(Wheelbipe25V3Env):
+    """Fudan task semantics with direct control of four entity drive bars."""
+
+    def __init__(self, cfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+        policy_indices = []
+        for name in POLICY_JOINT_NAMES:
+            indices, _ = self.robot.find_joints(name)
+            if len(indices) != 1:
+                raise RuntimeError(f"Expected exactly one FDU joint named {name!r}, got {indices}")
+            policy_indices.append(int(indices[0]))
+        if len(set(policy_indices)) != C.WYW_ACTION_DIM:
+            raise RuntimeError(f"FDU policy joint mapping contains duplicates: {policy_indices}")
+
+        self._wyw_policy_joint_idx = policy_indices
+        self._wyw_leg_joint_idx = [policy_indices[i] for i in C.WYW_LEG_ACTION_IDS]
+        self._wyw_wheel_joint_idx = [policy_indices[i] for i in C.WYW_WHEEL_ACTION_IDS]
+        self._legs_act_idx = list(self._wyw_leg_joint_idx)
+        self._wheel_idx = list(self._wyw_wheel_joint_idx)
+        self._actuate_idx = list(self._wyw_policy_joint_idx)
+        self._leg_action_dim = len(self._legs_act_idx)
+        self._wheel_action_dim = len(self._wheel_idx)
+        self._actuated_joint_count = len(self._actuate_idx)
+        self.max_wheel_vel = float(self.cfg.max_wheel_vel)
+
+        self._left_wheel_link_idx, _ = self.robot.find_bodies("l_wheel_Link")
+        self._right_wheel_link_idx, _ = self.robot.find_bodies("r_wheel_Link")
+        self._wheel_link_idx = list(self._left_wheel_link_idx) + list(self._right_wheel_link_idx)
+        self._wheel_link_count = len(self._wheel_link_idx)
+        self._desired_contact_link_idx = self._find_contact_sensor_indices(["[lr]_wheel_Link"])
+        self._reset_contact_link_idx = self._find_contact_sensor_indices(["base_link_del"])
+        self._undesired_contact_link_idx = self._find_contact_sensor_indices(
+            ["base_link_del", "[lr]f[01]_Link", "[lr]2[0-3]_Link"]
+        )
+        self._invalidate_step_caches()
+        self.static_priv_obs = self._get_static_priv_obs()
+        self._wyw_buffers_ready = False
+        self._ensure_wyw_buffers()
+        print(f"[WYW:FDU] policy joint order: {list(zip(POLICY_JOINT_NAMES, policy_indices))}")
+
+    def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        self._invalidate_step_caches()
+        self.finish_init.fill_(True)
+        self.start_reset.fill_(True)
+        self._actions = actions.clone()
+        if self.use_action_low_pass_filter:
+            self._actions = self._low_pass_action_filter(self._actions)
+        self.last_actions.copy_(self._actions)
+        self.leg_actions = (
+            self.robot.data.default_joint_pos[:, self._wyw_leg_joint_idx]
+            + self.leg_action_scale * self._actions[:, C.WYW_LEG_ACTION_IDS]
+        )
+        self.wheel_actions = self.wheel_action_scale * self._actions[:, C.WYW_WHEEL_ACTION_IDS]
+
+    def _apply_action(self) -> None:
+        leg_targets = torch.clamp(self.leg_actions, self.cfg.lower_joint_limit, self.cfg.upper_joint_limit)
+        wheel_targets = torch.clamp(self.wheel_actions, -self.max_wheel_vel, self.max_wheel_vel)
+        self.robot.set_joint_position_target(leg_targets, joint_ids=self._wyw_leg_joint_idx)
+        self.robot.set_joint_velocity_target(wheel_targets, joint_ids=self._wyw_wheel_joint_idx)
+        self._update_obs()
 
     # ------------------------------------------------------------------ #
     # 缓冲初始化 / 复位
@@ -53,19 +112,30 @@ class WheelbipeWywEnv(WheelbipeV14Env):
             dtype=torch.float,
             device=self.device,
         )
-        # critic 特权项索引 / 基准：base_link 体索引 + 未随机化的默认关节位（用于 DR 偏差项）。
-        base_idx, _ = self.robot.find_bodies("base_link")
+        self._wyw_history_needs_fill = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+        self._wyw_last_wheel_contacts = torch.zeros(
+            self.num_envs, 2, dtype=torch.bool, device=self.device
+        )
+        self._wyw_base_air_time = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        # critic 特权项索引 / 基准：FDU root + 未随机化的默认关节位。
+        base_idx, _ = self.robot.find_bodies("base_link_del")
         self._wyw_base_body_idx = int(base_idx[0]) if len(base_idx) else 0
         self._wyw_nominal_default_dof = self.robot.data.default_joint_pos[:, self._actuate_idx].clone()
         self._wyw_buffers_ready = True
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
+        reset_env_ids = self._as_env_ids_tensor(env_ids)
         super()._reset_idx(env_ids)
         self._ensure_wyw_buffers()
-        if env_ids is None:
-            self._wyw_obs_hist.zero_()
-        else:
-            self._wyw_obs_hist[env_ids] = 0.0
+        self._wyw_obs_hist[reset_env_ids] = 0.0
+        self._wyw_history_needs_fill[reset_env_ids] = True
+        self._clear_termination_duration_buffers(
+            reset_env_ids,
+            counter_attr="_wyw_orientation_termination_counter",
+            raw_attr="_wyw_orientation_termination_raw_buf",
+        )
+        # Deliberately do not clear _wyw_base_air_time or the previous-contact
+        # filter. The trained Fudan Jump implementation carries both across reset.
 
     # ------------------------------------------------------------------ #
     # 观测组装（fudan 布局）
@@ -79,15 +149,16 @@ class WheelbipeWywEnv(WheelbipeV14Env):
 
     def _build_wyw_policy_obs(self) -> torch.Tensor:
         """fudan actor 观测（25 维），用基类算好的延迟 / 带噪副本。"""
-        leg = C.WYW_LEG_DIM
         cmd = self._get_wyw_command_block()
+        policy_pos = self.obs_joint_pos[:, : C.WYW_ACTION_DIM]
+        policy_vel = self.obs_joint_vel[:, : C.WYW_ACTION_DIM]
         obs = torch.cat(
             [
                 self.obs_root_ang_vel_b * self.cfg.wyw_ang_vel_scale,        # 3
                 self.obs_projected_gravity_b * self.cfg.wyw_proj_gravity_scale,  # 3
                 cmd,                                                         # 3
-                self.obs_joint_pos[:, :leg] * self.cfg.wyw_joint_pos_scale,  # 4
-                self.obs_joint_vel * self.cfg.wyw_dof_vel_scale,             # 6
+                policy_pos[:, C.WYW_LEG_ACTION_IDS] * self.cfg.wyw_joint_pos_scale,  # 4
+                policy_vel * self.cfg.wyw_dof_vel_scale,                     # 6
                 self._actions,                                               # 6 (原始动作，fudan obs 不缩放)
             ],
             dim=-1,
@@ -177,6 +248,10 @@ class WheelbipeWywEnv(WheelbipeV14Env):
         # 滚动历史：index 0 最旧、-1 最新（与基类 Sim2Sim 约定一致）
         self._wyw_obs_hist = torch.roll(self._wyw_obs_hist, shifts=-1, dims=1)
         self._wyw_obs_hist[:, -1] = policy
+        if self._wyw_history_needs_fill.any():
+            fill_ids = self._wyw_history_needs_fill.nonzero(as_tuple=False).flatten()
+            self._wyw_obs_hist[fill_ids] = policy[fill_ids].unsqueeze(1)
+            self._wyw_history_needs_fill[fill_ids] = False
         policy_hist = self._wyw_obs_hist.reshape(self.num_envs, -1)
 
         observations["policy"] = policy
@@ -185,6 +260,14 @@ class WheelbipeWywEnv(WheelbipeV14Env):
         # 清理基类可能残留的、维度与 wyw 不一致的 critic 相关键，避免下游误用
         observations.pop("prev_critic", None)
         observations.pop("critic_hist", None)
+        if policy.shape[-1] != C.WYW_POLICY_OBS_DIM:
+            raise RuntimeError(f"WYW policy observation has shape {policy.shape}, expected last dim 25")
+        if policy_hist.shape[-1] != C.WYW_POLICY_HIST_DIM:
+            raise RuntimeError(f"WYW policy history has shape {policy_hist.shape}, expected last dim 125")
+        if observations["critic"].shape[-1] != C.WYW_CRITIC_DIM:
+            raise RuntimeError(
+                f"WYW critic observation has shape {observations['critic'].shape}, expected last dim 141"
+            )
         return observations
 
     # ------------------------------------------------------------------ #
@@ -202,13 +285,16 @@ class WheelbipeWywEnv(WheelbipeV14Env):
         else:
             l0_left = l0_right = zeros
 
-        # 车轮接触峰值 → 滞空 / 触地判定
-        net_forces = self.contact_sensor.data.net_forces_w_history
-        peaks = self._get_wheel_contact_force_peaks(net_forces)
-        if peaks.shape[1] >= 1:
-            not_contact = peaks < C.WYW_FLIGHT_CONTACT_FORCE
-            in_flight = torch.all(not_contact, dim=1)
-            any_contact = torch.any(peaks > C.WYW_FLIGHT_CONTACT_FORCE, dim=1)
+        # Fudan check_jump: current world-z force OR previous policy frame.
+        net_forces = self.contact_sensor.data.net_forces_w
+        if net_forces is not None and len(self._desired_contact_link_idx) == 2:
+            contact_now = (
+                net_forces[:, self._desired_contact_link_idx, 2] > C.WYW_FLIGHT_CONTACT_FORCE
+            )
+            contact_filt = contact_now | self._wyw_last_wheel_contacts
+            self._wyw_last_wheel_contacts.copy_(contact_now)
+            in_flight = torch.all(~contact_filt, dim=1)
+            any_contact = torch.any(contact_filt, dim=1)
         else:
             in_flight = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
             any_contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
@@ -233,7 +319,9 @@ class WheelbipeWywEnv(WheelbipeV14Env):
         # 滞空正竖直速度 / 平坦滞空奖励 / 高度加权滞空
         line_z = torch.clamp(vz, min=0.0) * in_flight_f
         flight = in_flight_f
-        encourage_jump = torch.clamp(root_z, min=0.0, max=C.WYW_AIRTIME_HEIGHT_CLIP) * in_flight_f
+        encourage_jump, self._wyw_base_air_time = update_buggy_fudan_airtime(
+            self._wyw_base_air_time, in_flight, root_z, vz, self.step_dt
+        )
 
         return {
             "base_height_flight": base_height_flight,
@@ -249,3 +337,18 @@ class WheelbipeWywEnv(WheelbipeV14Env):
         if bool(getattr(self.cfg, "wyw_jump_enabled", False)):
             reward_terms.update(self._compute_wyw_jump_terms())
         return reward_terms
+
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Use Fudan's persisted tilt failure while retaining numerical safety."""
+        _, time_out = super()._get_dones()
+        immediate_terminate = self._numerical_safety_reset_buf.clone()
+        bad_orientation = self.robot.data.projected_gravity_b[:, 2] > -0.1
+        orientation_terminate = self._apply_termination_duration(
+            bad_orientation,
+            counter_attr="_wyw_orientation_termination_counter",
+            raw_attr="_wyw_orientation_termination_raw_buf",
+        )
+        terminate = immediate_terminate | orientation_terminate
+        if self.cfg.play is True and not bool(getattr(self.cfg, "play_keep_done_reset", False)):
+            terminate.zero_()
+        return terminate, time_out

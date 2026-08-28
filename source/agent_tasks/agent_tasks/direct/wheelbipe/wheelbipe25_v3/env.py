@@ -42,6 +42,20 @@ class Wheelbipe25V3Env(DirectRLEnv):
     cfg: Wheelbipe25v3FlatEnvCfg | Wheelbipe25v3ReduceSpringFlatEnvCfg
     _skip_builtin_terrain_debug_marker = False
 
+    def _find_joints_optional(self, name_keys) -> tuple[list[int], list[str]]:
+        """Resolve an optional robot-specific joint group without rejecting other assets."""
+        try:
+            return self.robot.find_joints(name_keys)
+        except ValueError:
+            return [], []
+
+    def _find_bodies_optional(self, name_keys) -> tuple[list[int], list[str]]:
+        """Resolve an optional robot-specific body group without rejecting other assets."""
+        try:
+            return self.robot.find_bodies(name_keys)
+        except ValueError:
+            return [], []
+
     def _get_vel_height_gate_full_error(self) -> float | torch.Tensor:
         return getattr(self.cfg, "vel_height_gate_full_error", 0.05)
 
@@ -2043,14 +2057,14 @@ class Wheelbipe25V3Env(DirectRLEnv):
         self._legs_inact_idx, _ = self.robot.find_joints(self.cfg.legs_inact_name)
         self._wheel_idx, _ =  self.robot.find_joints(self.cfg.wheel_name)
         self._actuate_idx = self._legs_act_idx + self._wheel_idx
-        self._legs_front_idx, _ = self.robot.find_joints(".*_front1_joint")
-        self._legs_rear_idx, _ = self.robot.find_joints(".*_rear1_joint")
-        self._front1_joint_idx, _ = self.robot.find_joints(".*_front1_joint")
-        self._rear1_joint_idx, _ = self.robot.find_joints(".*_rear1_joint")
-        self._front2_joint_idx, _ = self.robot.find_joints(".*_front2_joint")
-        self._front3_joint_idx, _ = self.robot.find_joints(".*_front3_joint")
-        self._front4_joint_idx, _ = self.robot.find_joints(".*_front4_joint")
-        self._rear2_joint_idx, _ = self.robot.find_joints(".*_rear2_joint")
+        self._legs_front_idx, _ = self._find_joints_optional(".*_front1_joint")
+        self._legs_rear_idx, _ = self._find_joints_optional(".*_rear1_joint")
+        self._front1_joint_idx, _ = self._find_joints_optional(".*_front1_joint")
+        self._rear1_joint_idx, _ = self._find_joints_optional(".*_rear1_joint")
+        self._front2_joint_idx, _ = self._find_joints_optional(".*_front2_joint")
+        self._front3_joint_idx, _ = self._find_joints_optional(".*_front3_joint")
+        self._front4_joint_idx, _ = self._find_joints_optional(".*_front4_joint")
+        self._rear2_joint_idx, _ = self._find_joints_optional(".*_rear2_joint")
         self.reorder_reset_joint_idx = self._front1_joint_idx+self._rear1_joint_idx+self._front2_joint_idx+self._front3_joint_idx+self._front4_joint_idx+self._rear2_joint_idx
         self._deviation_joint_idx = self._front1_joint_idx+self._rear1_joint_idx
         self._left_right_leg_joint_pair_idx = self._get_left_right_leg_joint_pair_indices()
@@ -2097,7 +2111,7 @@ class Wheelbipe25V3Env(DirectRLEnv):
             self._right_wheel_link_idx = []
 
         # initial link idx
-        self._wheel_link_idx,_ = self.robot.find_bodies(".*_wheel_link")
+        self._wheel_link_idx, _ = self._find_bodies_optional(".*_wheel_link")
         try:
             self._guide_link_idx, _ = self.robot.find_bodies(".*_guide_link")
         except Exception:

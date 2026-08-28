@@ -9,16 +9,14 @@
 #     Wasser_welt
 # =============================================================================
 
-"""wyw 任务族的几何 / 观测 / 奖励常量（fudan 设计移植，from_hu 机器人本体）。
+"""WYW tensor-layout constants for the FDU closed-chain robot.
 
 设计意图（对齐 fudan_rl_wheel_leg）：
 - Actor 观测 25 维、Critic 特权观测拼 latent 前为 141 维（= fudan 原始 privileged_obs）、
   5 帧历史 → encoder 输入 125 维。
 - Actor/Critic/Obs/网络/PPO 超参在 Flat / Rough / Jump 三个任务间共享
   （唯一例外：Jump 的 ``wyw_lin_vel_scale=3.0``，Flat/Rough 为 2.0，见 env_cfg）。
-- ``WYW_ROBOT`` 开关切换本体相关的几何常量：``"from_hu"``（首版，USD 仍在改）或 ``"fudan"``。
-
-维度约定（from_hu Wheelbipe_V14_2，动作 6 维 = 4 腿关节位置 + 2 轮速）：
+维度约定（FDU 闭链并联本体，动作 6 维 = 4 实体驱动杆位置 + 2 轮速）：
 - 腿部驱动关节 ``leg_dim = 4``，轮 2，``_actuate_idx`` 合计 6。
 - Policy(25) = ang_vel(3) + proj_gravity(3) + cmd[vx,yaw,height](3)
                + leg_pos_dev(4) + dof_vel(6) + actions(6)
@@ -35,15 +33,12 @@
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------- #
-# 本体开关：首版用 from_hu（fudan USD 仍在修改，见 docs/intention.md）
-# ---------------------------------------------------------------------------- #
-WYW_ROBOT = "from_hu"  # "from_hu" | "fudan"
-
-# ---------------------------------------------------------------------------- #
 # 观测 / 网络维度
 # ---------------------------------------------------------------------------- #
-WYW_LEG_DIM = 4                 # 腿部驱动关节数（from_hu V14）
+WYW_LEG_DIM = 4                 # 腿部实体驱动杆数
 WYW_ACTION_DIM = 6              # 4 腿 + 2 轮
+WYW_LEG_ACTION_IDS = [0, 1, 3, 4]
+WYW_WHEEL_ACTION_IDS = [2, 5]
 WYW_POLICY_OBS_DIM = 25         # actor 观测维（见文件头布局）
 WYW_NUM_OBS_HIST = 5            # encoder 历史帧数
 WYW_POLICY_HIST_DIM = WYW_POLICY_OBS_DIM * WYW_NUM_OBS_HIST  # 125
@@ -64,26 +59,12 @@ WYW_LATENT_DIM = 3              # encoder latent（隐式基座线速度估计�
 # 本文件只保留：网络/观测**维度**、**几何**目标（L0、滞空高度）、物理**阈值**、跳跃**奖励权重**。
 #
 # ---------------------------------------------------------------------------- #
-# 跳跃（jump）几何常量：随本体切换
+# FDU 跳跃（jump）几何常量
 #   L0 = 腿长 = ||wheel_pos_heading_b||（每条腿轮心到基座在随航向水平系下的距离）
 # ---------------------------------------------------------------------------- #
-_JUMP_GEOMETRY = {
-    "from_hu": dict(
-        L0_TUCK=0.16,            # 收腿目标腿长（滞空收腿）
-        L0_EXTEND=0.31,          # 蹬伸目标腿长（起跳蹬地）
-        BASE_HEIGHT_FLIGHT=0.60,  # 滞空期望机身高度（顶点附近）
-    ),
-    "fudan": dict(
-        L0_TUCK=0.16,
-        L0_EXTEND=0.31,
-        BASE_HEIGHT_FLIGHT=0.65,
-    ),
-}
-
-_geom = _JUMP_GEOMETRY[WYW_ROBOT]
-WYW_L0_TUCK = _geom["L0_TUCK"]
-WYW_L0_EXTEND = _geom["L0_EXTEND"]
-WYW_BASE_HEIGHT_FLIGHT = _geom["BASE_HEIGHT_FLIGHT"]
+WYW_L0_TUCK = 0.16
+WYW_L0_EXTEND = 0.31
+WYW_BASE_HEIGHT_FLIGHT = 0.65
 
 # 跳跃触发 / 接触阈值（与本体无关）
 WYW_TAKEOFF_VZ = 0.15           # 判定"正在蹬伸起跳"的最小竖直速度

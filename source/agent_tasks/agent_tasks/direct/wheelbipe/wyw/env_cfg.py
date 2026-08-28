@@ -9,9 +9,9 @@
 #     Wasser_welt
 # =============================================================================
 
-"""wyw 任务族环境配置（Flat / Rough / Jump + Play）。
+"""wyw FDU 闭链并联本体环境配置（Flat / Rough / Jump + Play）。
 
-- 本体沿用 from_hu ``Wheelbipe_V14_2_CFG``（继承自 :class:`WheelbipeV14FlatEnvCfg`）。
+- 本体使用指定 ``infantry_V2.urdf`` 转换出的 ``Wheelbipe_FDU_CFG``。
 - 观测走 fudan 25/125/141 布局：在 ``__post_init__`` 末尾（``_apply_wyw_common``）强制把
   ``observation_space`` / ``state_space`` 设为 **int**（25 / 141，**不是 dict**——传 dict 会被
   stock ``DirectRLEnv._configure_gym_env_spaces`` 整体嵌进 ``["policy"]`` 丢掉 policy_hist 键），
@@ -27,13 +27,15 @@ import copy
 from collections import OrderedDict
 
 from isaaclab.utils import configclass
+from isaaclab.assets import ArticulationCfg
+from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import SceneEntityCfg
 
 import agent_tasks.manager.mdp.isaaclab as mdp
-from agent_tasks.direct.wheelbipe.wheelbipe_V14.env_cfg import (
-    WheelbipeV14FlatEnvCfg,
-    EventCfgV14_Play,
-)
+from agent_tasks.direct.wheelbipe.wheelbipe25_v3.env_cfg import Wheelbipe25v3FlatEnvCfg, EventCfg
 from agent_tasks.direct.wheelbipe.wheelbipe_V14.cfg_utils import _apply_v14_rough_runtime_cfg
+from agent_world.assets.wheelbipe_fdu import Wheelbipe_FDU_CFG
+from agent_world import AssetPath
 
 from . import wyw_constants as C
 
@@ -67,6 +69,9 @@ def _apply_wyw_common(cfg) -> None:
     cfg.dot_scanner = copy.deepcopy(cfg.dot_scanner)
     cfg.dot_scanner.pattern_cfg.resolution = 0.1
     cfg.dot_scanner.pattern_cfg.size = (1.0, 0.6)
+    cfg.height_scanner = copy.deepcopy(cfg.height_scanner)
+    cfg.height_scanner.prim_path = "/World/envs/env_.*/Robot/base_link_del"
+    cfg.dot_scanner.prim_path = "/World/envs/env_.*/Robot/base_link_del"
 
     # 命令：收敛到 fudan locomotion 范围，关闭 spin/dash 特殊模式
     ranges = getattr(cfg.commands, "ranges", None)
@@ -79,12 +84,78 @@ def _apply_wyw_common(cfg) -> None:
         for mode in special_modes.values():
             mode.rel_envs = 0.0
 
-    # 高度命令区间锁死为 from_hu 骑行高度量纲（rough helper 可能改成 [0.2,0.3]，这里强制回来）
+    # 高度命令区间锁死为当前 FDU 任务配置（rough helper 可能改写，故这里强制回来）
     cfg.height_range = [0.20, 0.42]
+    if cfg.terrain.terrain_type == "plane":
+        cfg.terrain.terrain_type = "usd"
+        cfg.terrain.usd_path = f"{AssetPath}/usd_files/flat_ground.usda"
 
 
 @configclass
-class WheelbipeWywFlatEnvCfg(WheelbipeV14FlatEnvCfg):
+class FduEventCfg(EventCfg):
+    """V3 domain randomization retargeted to exact FDU entity names."""
+
+    add_base_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link_del"),
+            "mass_distribution_params": (0.9, 1.2),
+            "operation": "scale",
+        },
+    )
+    add_leg_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names=["[lr]f[01]_Link", "[lr]2[0-3]_Link"]),
+            "mass_distribution_params": (0.9, 1.1),
+            "operation": "scale",
+        },
+    )
+    add_wheel_mass = EventTerm(
+        func=mdp.randomize_rigid_body_mass,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="[lr]_wheel_Link"),
+            "mass_distribution_params": (0.9, 1.1),
+            "operation": "scale",
+        },
+    )
+    base_com = EventTerm(
+        func=mdp.randomize_rigid_body_com,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link_del"),
+            "com_range": {"x": (-0.02, 0.02), "y": (-0.04, 0.04), "z": (-0.02, 0.02)},
+        },
+    )
+    physics_material = EventTerm(
+        func=mdp.randomize_rigid_body_material,
+        mode="startup",
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="[lr]_wheel_Link"),
+            "static_friction_range": (0.5, 1.0),
+            "dynamic_friction_range": (0.4, 0.8),
+            "restitution_range": (0.0, 0.2),
+            "num_buckets": 64,
+            "make_consistent": True,
+        },
+    )
+    base_external_force_torque_xyz = EventTerm(
+        func=mdp.apply_external_force_torque_xyz,
+        mode="interval",
+        interval_range_s=(5.0, 10.0),
+        params={
+            "asset_cfg": SceneEntityCfg("robot", body_names="base_link_del"),
+            "force_range": ((-10.0, 10.0), (-10.0, 10.0), (-10.0, 10.0)),
+            "torque_range": ((-1.0, 1.0), (-1.0, 1.0), (-1.0, 1.0)),
+        },
+    )
+
+
+@configclass
+class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     """wyw Flat：平地 + fudan locomotion 奖励 + ActorCriticSequence。"""
 
     # 关闭基类 7 维 ctrl_mode_obs（我们完全自定义 obs 布局）
@@ -97,6 +168,22 @@ class WheelbipeWywFlatEnvCfg(WheelbipeV14FlatEnvCfg):
     # 声明（会在 __post_init__ 末尾再强制一次，防止基类重算覆盖）
     observation_space = C.WYW_POLICY_OBS_DIM
     state_space = C.WYW_CRITIC_DIM
+    events = FduEventCfg()
+    robot_cfg: ArticulationCfg = Wheelbipe_FDU_CFG.replace(prim_path="/World/envs/env_.*/Robot").copy()
+    legs_act_name = robot_cfg.actuators["legs_act"].joint_names_expr
+    legs_inact_name = robot_cfg.actuators["legs_inact"].joint_names_expr
+    wheel_name = robot_cfg.actuators["wheel"].joint_names_expr
+    use_spring = False
+    use_leg_random_start = False
+    use_joint_vel_random_start = False
+    use_predefined_leg_random_start = False
+    use_obs_delay = False
+    use_act_delay = False
+    leg_action_scale = 0.5
+    wheel_vel_action_scale = 10.0
+    max_wheel_vel = 60.0
+    termination_duration_enabled = True
+    termination_duration_steps = 100
 
     # ------------------------------------------------------------------ #
     # 观测缩放（obs_scales）—— 按 IsaacLab / wheelbipe25_v3 风格作为 configclass 字段。
@@ -156,6 +243,9 @@ class WheelbipeWywJumpEnvCfg(WheelbipeWywFlatEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        self.robot_cfg = copy.deepcopy(self.robot_cfg)
+        self.robot_cfg.actuators["legs_act"].stiffness = 6.0
+        self.robot_cfg.actuators["legs_act"].damping = 0.5
         # locomotion + jump 奖励项合并（基类只对 cfg.rewards 中列出的键求和）
         jump_rewards = OrderedDict(self.rewards)
         jump_rewards.update(C.WYW_JUMP_REWARD_WEIGHTS)
@@ -167,17 +257,17 @@ class WheelbipeWywJumpEnvCfg(WheelbipeWywFlatEnvCfg):
 # ---------------------------------------------------------------------------- #
 @configclass
 class WheelbipeWywFlatEnvCfg_Play(WheelbipeWywFlatEnvCfg):
-    events = EventCfgV14_Play()
+    events = FduEventCfg()
     curriculum = None
 
 
 @configclass
 class WheelbipeWywRoughEnvCfg_Play(WheelbipeWywRoughEnvCfg):
-    events = EventCfgV14_Play()
+    events = FduEventCfg()
     curriculum = None
 
 
 @configclass
 class WheelbipeWywJumpEnvCfg_Play(WheelbipeWywJumpEnvCfg):
-    events = EventCfgV14_Play()
+    events = FduEventCfg()
     curriculum = None

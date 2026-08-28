@@ -8,13 +8,12 @@
 
 """ArticulationCfg for the Fudan closed-loop (五连杆 / 筝形) wheeled-legged robot.
 
-Migrated from the Fudan MuJoCo model. Unlike the serial-virtual-leg + mapped-torque
-scheme Fudan used at deploy time, here we train NATIVELY on the closed chain: each
-leg drives two hip joints (front + rear bar), exactly like hu's parallel-linkage
-model. The parallel loop is closed in the USD by 4 spherical loop joints flagged
+The source of truth is ``meshes/infantry_V2.urdf``. The policy drives the front
+and rear entity hip joints directly; it does not use Fudan's old virtual-knee
+torque mapping. The parallel loop is closed in the USD by 4 spherical loop joints flagged
 ``physics:excludeFromArticulation`` (see robot_models/.../add_loop_joints.py).
 
-Joint roles (16 DOF total), and how they map onto hu's Wheelbipe_V14_2 groups:
+Joint roles (14 DOF total):
 
   driven hips (legs_act)   : rf0_Joint, lf0_Joint  (front bar, = hu front1)
                              r20_Joint, l20_Joint  (rear bar,  = hu rear1)
@@ -22,13 +21,7 @@ Joint roles (16 DOF total), and how they map onto hu's Wheelbipe_V14_2 groups:
   passive linkage (inact)  : rf1_Joint, lf1_Joint          (front knee)
                              r21/r22/r23_Joint, l21/l22/l23_Joint (rear linkage,
                                                            constrained by the loops)
-  dummy gas-spring (spring): left_spring2_joint, right_spring2_joint
-                             -- decoupled prismatic DOFs on the base, kept so hu's
-                                spring pipeline has a slot; given ZERO drive and
-                                ZERO damping so they never affect the leg.
-
-The gimbal (云台 yaw/pitch) is intentionally absent here -- base_link_del is the
-gimbal-removed base; the gimbal is added as a separate later step.
+The selected URDF's base mesh and inertial block are used verbatim.
 """
 
 import isaaclab.sim as sim_utils
@@ -36,10 +29,6 @@ from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import IdealPDActuatorCfg
 
 from agent_world import AssetPath
-
-# Fudan hips use DM-series actuators; reuse hu's DM8009 reflected armature as a
-# reasonable default (gear ratio 9:1). Tune once real motor specs are confirmed.
-DM8009_ARMATURE = 1.95e-04 * 9.0 * 9.0
 
 
 Wheelbipe_FDU_CFG = ArticulationCfg(
@@ -78,19 +67,18 @@ Wheelbipe_FDU_CFG = ArticulationCfg(
             "r2[123]_Joint": 0.0,
             "l2[123]_Joint": 0.0,
             ".*_wheel_Joint": 0.0,
-            ".*_spring2_joint": 0.0,
         },
         joint_vel={".*": 0.0},
     ),
     actuators={
-        # driven hips: front bar (rf0/lf0) + rear bar (r20/l20)
+        # Four entity motors: front and rear driven bar on each closed-chain leg.
         "legs_act": IdealPDActuatorCfg(
-            joint_names_expr=["rf0_Joint", "lf0_Joint", "r20_Joint", "l20_Joint"],
-            stiffness=60.0,
-            damping=2.0,
-            effort_limit=40.0,
-            velocity_limit=17.0,
-            armature=DM8009_ARMATURE,
+            joint_names_expr=["lf0_Joint", "l20_Joint", "rf0_Joint", "r20_Joint"],
+            stiffness=20.0,
+            damping=1.0,
+            effort_limit=30.0,
+            velocity_limit=30.0,
+            armature=0.0,
         ),
         # passive linkage joints (front knee + rear 3-bar); the loop constraints
         # determine their motion, so no drive -- just a whisker of damping.
@@ -106,18 +94,9 @@ Wheelbipe_FDU_CFG = ArticulationCfg(
             joint_names_expr=[".*_wheel_Joint"],
             stiffness=0.0,
             damping=0.2,
-            effort_limit=5.0,
+            effort_limit=30.0,
             velocity_limit=60.0,
             armature=0.0,
-        ),
-        # dummy gas-spring DOFs: no force, no damping -> zero effect on the leg.
-        "spring": IdealPDActuatorCfg(
-            joint_names_expr=[".*_spring2_joint"],
-            stiffness=0.0,
-            damping=0.0,
-            effort_limit=0.0,
-            velocity_limit=50.0,
-            armature=0.0001,
         ),
     },
 )
