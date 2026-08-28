@@ -95,7 +95,12 @@ Wheelbipe_FDU_CFG = ArticulationCfg(
             stiffness=0.0,
             damping=0.2,
             effort_limit=30.0,
+            # The Fudan controller has no wheel-speed clamp: it applies a
+            # torque-limited velocity error. 60 rad/s covers its command range
+            # on the 0.06 m wheels while keeping this target-control adapter
+            # bounded. Keep the PhysX limit identical to the runtime clamp.
             velocity_limit=60.0,
+            velocity_limit_sim=60.0,
             armature=0.0,
         ),
     },

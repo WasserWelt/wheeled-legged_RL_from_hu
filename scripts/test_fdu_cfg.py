@@ -7,6 +7,7 @@ Run from repo root:  python scripts/test_fdu_cfg.py --headless
 
 import argparse
 import json
+import math
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
@@ -44,6 +45,18 @@ def main():
         js = [robot.joint_names[i] for i in act.joint_indices]
         actuator_groups[name] = js
         lines.append(f"actuator '{name}': {js}")
+    wheel_actuator = robot.actuators["wheel"]
+    assert wheel_actuator.cfg.velocity_limit == 60.0
+    assert wheel_actuator.cfg.velocity_limit_sim == 60.0
+    for joint_name in ("l_wheel_Joint", "r_wheel_Joint"):
+        joint_index = robot.joint_names.index(joint_name)
+        joint_velocity_limit = float(robot.data.joint_vel_limits[0, joint_index])
+        assert math.isclose(
+            joint_velocity_limit,
+            60.0,
+            rel_tol=1.0e-6,
+        ), f"{joint_name} velocity limit is {joint_velocity_limit}, expected 60.0"
+    lines.append("wheel velocity limit: asset=60.0 rad/s, runtime joint limit=60.0 rad/s")
     lines.append("ALL ACTUATOR GROUPS RESOLVED OK")
     lines.append("=" * 60)
     for ln in lines:

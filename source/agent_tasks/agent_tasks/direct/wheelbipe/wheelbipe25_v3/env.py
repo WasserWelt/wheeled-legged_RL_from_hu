@@ -2043,7 +2043,7 @@ class Wheelbipe25V3Env(DirectRLEnv):
         self.use_wheel_vel_control = getattr(self.cfg, 'use_wheel_vel_control', False)
         if self.use_wheel_vel_control:
             self.wheel_action_scale = getattr(self.cfg, 'wheel_vel_action_scale', 10.0)
-            self.max_wheel_vel = getattr(self.cfg, 'max_wheel_vel', 60.0)*1.5
+            self.max_wheel_vel = getattr(self.cfg, 'max_wheel_vel', 60.0)
             print(f'[WheelCtrl] 轮速控制模式已启用: scale={self.wheel_action_scale}, max_vel={self.max_wheel_vel} rad/s')
         else:
             self.wheel_action_scale = self.cfg.wheel_action_scale
@@ -4017,6 +4017,22 @@ class Wheelbipe25V3Env(DirectRLEnv):
         # 用 .get() 防止 cfg.rewards 里存在但对应 rew_* 变量被注释掉的键（如 standup 相关）
         _zero_rew = torch.zeros(self.num_envs, device=self.device)
         rewards = {k: w * rewards.get(k, _zero_rew) for k, w in self.cfg.rewards.items()}
+        # Match legged_gym's per-term clipping when a task opts in.  Clipping is
+        # intentionally after weight and step_dt, before episode sums/aggregation.
+        clip_single = getattr(self.cfg, "clip_single_reward", None)
+        if clip_single is not None:
+            clip_bound = abs(float(clip_single)) * self.step_dt
+            rewards = {
+                key: torch.clamp(value, min=-clip_bound, max=clip_bound)
+                for key, value in rewards.items()
+            }
+        if bool(getattr(self.cfg, "only_positive_rewards", False)):
+            total_before_clip = torch.sum(torch.stack(list(rewards.values()), dim=-1), dim=-1)
+            deficit = torch.clamp_min(-total_before_clip, 0.0)
+            if rewards:
+                # Preserve term logging while applying the total non-negative
+                # policy used by the source implementation.
+                rewards[next(iter(rewards))] = rewards[next(iter(rewards))] + deficit
 
         # 数值保护：
         # 1. 将每个 reward term 内部产生的 NaN/Inf 直接归零，防止污染 rollout。

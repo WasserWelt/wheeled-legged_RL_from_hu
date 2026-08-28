@@ -17,9 +17,9 @@
 - ``_get_observations``：先调 ``super()`` 触发全部副作用，再用 fudan 布局的张量覆写
   ``policy`` / ``critic`` / ``policy_hist`` 三个键。base_lin_vel 放 critic 前 3 维，供
   ``PPOSequence`` 的 encoder 做隐式线速度监督。
-- ``_postprocess_reward_terms``：先调 ``super()``，Jump 任务再注入 fudan 涌现式跳跃项
-  （基类只对 ``cfg.rewards`` 中列出的键求和，多余 ``rew_*`` 自动丢弃，无污染）。
-- ``_get_dones``：直接复用基类（已含接触 / 倾倒 / 数值安全 / 超时终止）。
+- ``_get_rewards``：使用独立的 Fudan 精确公式和 term 集合，同时保留基类命令刷新、
+  episode logging、数值保护和逐项裁剪契约。
+- ``_get_dones``：使用 Fudan 连续倾倒判定，同时保留数值安全和超时终止。
 
 自维护缓冲（不依赖基类的 obs_history）：
 - ``_wyw_obs_hist``：(N, T=5, 25) 的 fudan policy 历史，滚动写入，供 encoder。
@@ -30,6 +30,7 @@ from __future__ import annotations
 from typing import Sequence
 
 import torch
+from isaaclab.utils.math import quat_apply
 
 from agent_tasks.direct.wheelbipe.wheelbipe25_v3.env import Wheelbipe25V3Env
 
@@ -64,6 +65,11 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
 
         self._left_wheel_link_idx, _ = self.robot.find_bodies("l_wheel_Link")
         self._right_wheel_link_idx, _ = self.robot.find_bodies("r_wheel_Link")
+        left_hip, _ = self.robot.find_bodies("lf0_Link")
+        right_hip, _ = self.robot.find_bodies("rf0_Link")
+        if len(left_hip) != 1 or len(right_hip) != 1:
+            raise RuntimeError(f"Expected one FDU hip link per side, got left={left_hip}, right={right_hip}")
+        self._wyw_hip_link_idx = [int(left_hip[0]), int(right_hip[0])]
         self._wheel_link_idx = list(self._left_wheel_link_idx) + list(self._right_wheel_link_idx)
         self._wheel_link_count = len(self._wheel_link_idx)
         self._desired_contact_link_idx = self._find_contact_sensor_indices(["[lr]_wheel_Link"])
@@ -147,15 +153,26 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         height = self._get_observation_height_cmd().unsqueeze(-1) * self.cfg.wyw_height_cmd_scale
         return torch.cat([vx, yaw, height], dim=-1)
 
-    def _build_wyw_policy_obs(self) -> torch.Tensor:
-        """fudan actor 观测（25 维），用基类算好的延迟 / 带噪副本。"""
+    def _build_wyw_policy_obs(self, *, noisy: bool) -> torch.Tensor:
+        """Build the 25-D Fudan proprioception, optionally adding actor-only noise."""
         cmd = self._get_wyw_command_block()
         policy_pos = self.obs_joint_pos[:, : C.WYW_ACTION_DIM]
         policy_vel = self.obs_joint_vel[:, : C.WYW_ACTION_DIM]
+        ang_vel = self.obs_root_ang_vel_b
+        gravity = self.obs_projected_gravity_b
+        if noisy and self.use_self_obs_noise:
+            ang_vel = self.self_obs_noise["root_ang_vel_b"](ang_vel)
+            gravity = self.self_obs_noise["projected_gravity_b"](gravity)
+            policy_pos = self.self_obs_noise["joint_pos"](policy_pos)
+            leg_vel = self.self_obs_noise["leg_joint_vel"](policy_vel[:, C.WYW_LEG_ACTION_IDS])
+            wheel_vel = self.self_obs_noise["wheel_joint_vel"](policy_vel[:, C.WYW_WHEEL_ACTION_IDS])
+            policy_vel = policy_vel.clone()
+            policy_vel[:, C.WYW_LEG_ACTION_IDS] = leg_vel
+            policy_vel[:, C.WYW_WHEEL_ACTION_IDS] = wheel_vel
         obs = torch.cat(
             [
-                self.obs_root_ang_vel_b * self.cfg.wyw_ang_vel_scale,        # 3
-                self.obs_projected_gravity_b * self.cfg.wyw_proj_gravity_scale,  # 3
+                ang_vel * self.cfg.wyw_ang_vel_scale,                         # 3
+                gravity * self.cfg.wyw_proj_gravity_scale,                    # 3
                 cmd,                                                         # 3
                 policy_pos[:, C.WYW_LEG_ACTION_IDS] * self.cfg.wyw_joint_pos_scale,  # 4
                 policy_vel * self.cfg.wyw_dof_vel_scale,                     # 6
@@ -168,41 +185,37 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
     def _build_wyw_priv_dr_obs(self) -> torch.Tensor:
         """fudan critic 尾部的域随机化特权块（12 维，未做 obs 缩放，与 fudan 一致）。
 
-        组成：base_mass_dev(1) + base_com(3) + default_dof_delta(6) + friction(1) + restitution(1)。
-        对应 fudan 的 (base_mass-mean) / base_com / (default_dof_pos-raw) / friction_coef /
-        restitution_coef。from_hu 若某项未随机化（如 default_dof）则该段恒为 0，仅占位保维度。
+        组成：centered_base_mass(1) + sampled_com_offset(3) + default_dof_delta(6)
+        + friction(1) + restitution(1)。对应 fudan 的 (base_mass-mean) / base_com /
+        (default_dof_pos-raw) / friction_coef /
+        restitution_coef。FDU 若某项未随机化（如 default_dof）则该段恒为 0，仅占位保维度。
         """
         n = self.num_envs
-        base_idx = self._wyw_base_body_idx
-
-        # base_mass 偏差 = 当前质量 − 默认（未随机化）质量
-        masses = self._get_body_masses_tensor()
-        default_mass = getattr(self.robot.data, "default_mass", None)
-        if masses is not None and default_mass is not None:
-            default_mass = torch.as_tensor(default_mass, dtype=torch.float, device=self.device)
-            if default_mass.shape != masses.shape:
-                default_mass = default_mass.expand_as(masses)
-            base_mass_dev = (masses - default_mass)[:, base_idx].reshape(n, 1)
+        # Fudan privilege records the sampled base addition before inertia scaling.
+        base_mass_sample = getattr(self, "_wyw_base_mass_dev_sample", None)
+        if base_mass_sample is not None:
+            base_mass_dev = base_mass_sample.reshape(n, 1)
         else:
             base_mass_dev = torch.zeros(n, 1, dtype=torch.float, device=self.device)
 
         # base_com（体坐标系下质心，DR 会平移）
-        body_com = getattr(self.robot.data, "body_com_pos_b", None)
-        if body_com is not None:
-            base_com = body_com[:, base_idx, :].reshape(n, 3)
+        base_com_sample = getattr(self, "_wyw_base_com_sample", None)
+        if base_com_sample is not None:
+            base_com = base_com_sample.reshape(n, 3)
         else:
             base_com = torch.zeros(n, 3, dtype=torch.float, device=self.device)
 
-        # default_dof 偏差（from_hu 通常不随机化 → 0；捕获一次 nominal 后作差，随机化则自动有效）
-        default_dof_delta = (
-            self.robot.data.default_joint_pos[:, self._actuate_idx] - self._wyw_nominal_default_dof
-        )
+        # default_dof 偏差（FDU 通常不随机化 → 0；捕获一次 nominal 后作差，随机化则自动有效）
+        default_dof_delta = getattr(self, "_wyw_default_dof_delta_sample", None)
+        if default_dof_delta is None:
+            default_dof_delta = self.robot.data.default_joint_pos[:, self._actuate_idx] - self._wyw_nominal_default_dof
 
         # 摩擦 / 恢复系数：material_properties = [static_friction, dynamic_friction, restitution]
-        material = self._get_body_material_tensor()
-        if material is not None and material.ndim >= 3 and material.shape[-1] >= 3:
-            friction = material[..., 0].mean(dim=1, keepdim=True)
-            restitution = material[..., 2].mean(dim=1, keepdim=True)
+        friction_sample = getattr(self, "_wyw_friction_sample", None)
+        restitution_sample = getattr(self, "_wyw_restitution_sample", None)
+        if friction_sample is not None and restitution_sample is not None:
+            friction = friction_sample.reshape(n, 1)
+            restitution = restitution_sample.reshape(n, 1)
         else:
             friction = torch.zeros(n, 1, dtype=torch.float, device=self.device)
             restitution = torch.zeros(n, 1, dtype=torch.float, device=self.device)
@@ -223,7 +236,7 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         base_lin_vel = self.robot.data.root_lin_vel_b * self.cfg.wyw_lin_vel_scale  # 3 (encoder 监督目标)
         joint_acc = self.robot.data.joint_acc[:, self._actuate_idx]
         torque = self.robot.data.applied_torque[:, self._actuate_idx]
-        heights = self._get_scan_dot_obs()  # 77（已 ×height_scale，_pad_flat_features 保证 = n_scan）
+        heights = self._get_fdu_height_scan_obs()
         critic = torch.cat(
             [
                 base_lin_vel,                                                # 3
@@ -239,12 +252,33 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         )
         return torch.nan_to_num(critic, nan=0.0, posinf=0.0, neginf=0.0)
 
+    def _get_fdu_height_scan_obs(self) -> torch.Tensor:
+        """Return Fudan's clip(root_z - 0.5 - terrain_z) * height_scale scan."""
+        ray_hits = getattr(getattr(self.dot_scanner, "data", None), "ray_hits_w", None)
+        if ray_hits is None:
+            return torch.zeros(self.num_envs, C.WYW_N_SCAN, device=self.device)
+        relative = self.robot.data.root_pos_w[:, 2:3] - 0.5 - ray_hits[..., 2]
+        relative = self._pad_flat_features(relative, C.WYW_N_SCAN)
+        return torch.nan_to_num(torch.clamp(relative, -1.0, 1.0) * self.cfg.height_scale)
+
+    def _get_fdu_base_height(self) -> torch.Tensor:
+        """Average base-to-local-ground height over the same 77 Fudan samples."""
+        ray_hits = getattr(getattr(self.dot_scanner, "data", None), "ray_hits_w", None)
+        if ray_hits is None:
+            return self.robot.data.root_pos_w[:, 2] - self.ground_z_est
+        terrain_z = ray_hits[..., 2]
+        finite = torch.isfinite(terrain_z)
+        mean_z = terrain_z.masked_fill(~finite, 0.0).sum(dim=-1) / finite.sum(dim=-1).clamp_min(1)
+        mean_z = torch.where(finite.any(dim=-1), mean_z, self.ground_z_est)
+        return self.robot.data.root_pos_w[:, 2] - mean_z
+
     def _get_observations(self) -> dict:
         # 先跑基类：触发全部有状态副作用（obs 延迟副本、命令刷新、地面高度估计、历史 deque 等）
         observations = super()._get_observations()
         self._ensure_wyw_buffers()
 
-        policy = self._build_wyw_policy_obs()
+        clean_policy = self._build_wyw_policy_obs(noisy=False)
+        policy = self._build_wyw_policy_obs(noisy=True)
         # 滚动历史：index 0 最旧、-1 最新（与基类 Sim2Sim 约定一致）
         self._wyw_obs_hist = torch.roll(self._wyw_obs_hist, shifts=-1, dims=1)
         self._wyw_obs_hist[:, -1] = policy
@@ -256,7 +290,7 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
 
         observations["policy"] = policy
         observations["policy_hist"] = policy_hist
-        observations["critic"] = self._build_wyw_critic_obs(policy)
+        observations["critic"] = self._build_wyw_critic_obs(clean_policy)
         # 清理基类可能残留的、维度与 wyw 不一致的 critic 相关键，避免下游误用
         observations.pop("prev_critic", None)
         observations.pop("critic_hist", None)
@@ -273,23 +307,29 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
     # ------------------------------------------------------------------ #
     # 跳跃奖励注入（Jump 任务）
     # ------------------------------------------------------------------ #
-    def _compute_wyw_jump_terms(self) -> dict[str, torch.Tensor]:
+    def _get_wyw_virtual_leg_geometry(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return body-frame wheel positions, hip-to-wheel lengths and angles."""
+        root_quat_inv, wheel_pos_b, _, _, _ = self._get_root_quat_inv_and_wheel_pos_b()
+        root_pos = self.robot.data.root_pos_w
+        hip_rel_w = self.robot.data.body_pos_w[:, self._wyw_hip_link_idx] - root_pos.unsqueeze(1)
+        hip_pos_b = quat_apply(root_quat_inv.unsqueeze(1).expand(-1, 2, -1), hip_rel_w)
+        wheel_from_hip = wheel_pos_b[:, :, [0, 2]] - hip_pos_b[:, :, [0, 2]]
+        lengths = torch.linalg.vector_norm(wheel_from_hip, dim=-1).clamp_min(1.0e-6)
+        angles = torch.atan2(-wheel_from_hip[:, :, 0], -wheel_from_hip[:, :, 1])
+        return wheel_pos_b, lengths, angles
+
+    def _compute_wyw_jump_terms(self, leg_lengths: torch.Tensor) -> dict[str, torch.Tensor]:
         """fudan 涌现式跳跃奖励项（均为 per-step 速率，后续统一 ×step_dt）。"""
         zeros = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
-        # 腿长 L0（缓存已在 _get_rewards 开头刷新）
-        _, _, wheel_pos_heading_b, _, _ = self._get_root_quat_inv_and_wheel_pos_b()
-        if wheel_pos_heading_b.shape[1] >= 2:
-            l0_left = torch.norm(wheel_pos_heading_b[:, 0], dim=-1)
-            l0_right = torch.norm(wheel_pos_heading_b[:, 1], dim=-1)
-        else:
-            l0_left = l0_right = zeros
+        l0_left = leg_lengths[:, 0]
+        l0_right = leg_lengths[:, 1]
 
         # Fudan check_jump: current world-z force OR previous policy frame.
         net_forces = self.contact_sensor.data.net_forces_w
         if net_forces is not None and len(self._desired_contact_link_idx) == 2:
             contact_now = (
-                net_forces[:, self._desired_contact_link_idx, 2] > C.WYW_FLIGHT_CONTACT_FORCE
+                net_forces[:, self._desired_contact_link_idx, 2] > self.cfg.wyw_flight_contact_force
             )
             contact_filt = contact_now | self._wyw_last_wheel_contacts
             self._wyw_last_wheel_contacts.copy_(contact_now)
@@ -305,16 +345,16 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
 
         # 滞空期望机身高度
         base_height_flight = torch.exp(
-            -torch.abs(root_z - C.WYW_BASE_HEIGHT_FLIGHT) * 6.0
+            -torch.abs(root_z - self.cfg.wyw_base_height_flight) * 6.0
         ) * in_flight_f
         # 滞空收腿
         leg_tuck = torch.exp(
-            -(torch.abs(l0_left - C.WYW_L0_TUCK) + torch.abs(l0_right - C.WYW_L0_TUCK)) * 4.0
+            -(torch.abs(l0_left - self.cfg.wyw_l0_tuck) + torch.abs(l0_right - self.cfg.wyw_l0_tuck)) * 4.0
         ) * in_flight_f
         # 触地蹬伸（有轮触地且正在向上加速）
-        takeoff_mask = (any_contact & (vz > C.WYW_TAKEOFF_VZ)).float()
+        takeoff_mask = (any_contact & (vz > self.cfg.wyw_takeoff_vz)).float()
         takeoff_extend = torch.exp(
-            -(torch.abs(l0_left - C.WYW_L0_EXTEND) + torch.abs(l0_right - C.WYW_L0_EXTEND)) * 4.0
+            -(torch.abs(l0_left - self.cfg.wyw_l0_extend) + torch.abs(l0_right - self.cfg.wyw_l0_extend)) * 4.0
         ) * takeoff_mask
         # 滞空正竖直速度 / 平坦滞空奖励 / 高度加权滞空
         line_z = torch.clamp(vz, min=0.0) * in_flight_f
@@ -332,15 +372,121 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             "encourage_jump": encourage_jump,
         }
 
-    def _postprocess_reward_terms(self, reward_terms: dict) -> dict:
-        reward_terms = super()._postprocess_reward_terms(reward_terms)
+    def _compute_fdu_reward_terms(self) -> dict[str, torch.Tensor]:
+        """Compute the named Fudan reward terms without V3 shaping gates."""
+        self._update_ground_height_estimate()
+        wheel_pos_b, leg_lengths, leg_angles = self._get_wyw_virtual_leg_geometry()
+        left_len, right_len = leg_lengths[:, 0], leg_lengths[:, 1]
+        left_theta, right_theta = leg_angles[:, 0], leg_angles[:, 1]
+
+        sigma = max(float(getattr(self.cfg, "tracking_sigma", 0.25)), 1.0e-6)
+        lin_err = torch.square(self.command[:, 0] - self.robot.data.root_lin_vel_b[:, 0])
+        ang_err = torch.square(self.command[:, 2] - self.robot.data.root_ang_vel_b[:, 2])
+        lin_scale = 2.0 if bool(getattr(self.cfg, "wyw_jump_enabled", False)) else 1.0
+        lin_track = torch.exp(-lin_err / sigma) * lin_scale
+        lin_enhance = (torch.exp(-lin_err / (10.0 * sigma)) - 1.0) * lin_scale
+
+        observed_height = self._get_fdu_base_height()
+        height_cmd = self._get_observation_height_cmd()
+        height = torch.exp(-torch.square(observed_height - height_cmd) / 0.001)
+
+        qdot = self.robot.data.joint_vel[:, self._actuate_idx]
+        qddot = self.robot.data.joint_acc[:, self._actuate_idx]
+        tau = self.robot.data.applied_torque[:, self._actuate_idx]
+        action_delta = self._actions - self._previous_actions
+        action_second = self._actions - 2.0 * self._previous_actions + self._before_previous_actions
+
+        hard_limits = self.robot.data.joint_pos_limits[:, self._actuate_idx]
+        centers = 0.5 * (hard_limits[..., 0] + hard_limits[..., 1])
+        half_ranges = 0.5 * (hard_limits[..., 1] - hard_limits[..., 0])
+        soft_lower = centers - 0.97 * half_ranges
+        soft_upper = centers + 0.97 * half_ranges
+        positions = self.robot.data.joint_pos[:, self._actuate_idx]
+        pos_limit_penalty = torch.sum(
+            torch.clamp(soft_lower - positions, min=0.0)
+            + torch.clamp(positions - soft_upper, min=0.0),
+            dim=-1,
+        )
+
+        contact_forces = getattr(self.contact_sensor.data, "net_forces_w", None)
+        if contact_forces is None or not self._undesired_contact_link_idx:
+            collision = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        else:
+            selected = contact_forces[:, self._undesired_contact_link_idx]
+            collision = (torch.linalg.vector_norm(selected, dim=-1) > 0.1).float().sum(dim=-1)
+
+        terms = {
+            "tracking_lin_vel": lin_track,
+            "tracking_lin_vel_enhance": lin_enhance,
+            "tracking_ang_vel": torch.exp(-ang_err / sigma),
+            "tracking_ang_vel_enhance": torch.exp(-ang_err / (10.0 * sigma)) - 1.0,
+            "base_height": height,
+            "nominal_state": torch.square(left_theta - right_theta),
+            "lin_vel_z": torch.square(self.robot.data.root_lin_vel_b[:, 2]),
+            "ang_vel_xy": torch.square(self.robot.data.root_ang_vel_b[:, :2]).sum(dim=-1),
+            "orientation": torch.square(self.robot.data.projected_gravity_b[:, :2]).sum(dim=-1),
+            "dof_vel": torch.square(qdot[:, C.WYW_LEG_ACTION_IDS]).sum(dim=-1),
+            "dof_acc": torch.square(qddot).sum(dim=-1),
+            "torques": torch.square(tau).sum(dim=-1),
+            "action_rate": torch.square(action_delta).sum(dim=-1),
+            "action_smooth": torch.square(action_second[:, C.WYW_LEG_ACTION_IDS]).sum(dim=-1),
+            "collision": collision,
+            "dof_pos_limits": pos_limit_penalty,
+        }
         if bool(getattr(self.cfg, "wyw_jump_enabled", False)):
-            reward_terms.update(self._compute_wyw_jump_terms())
+            terms.update(self._compute_wyw_jump_terms(leg_lengths))
+            terms["pen_theta_no0"] = torch.square(torch.stack((left_theta, right_theta), dim=-1)).sum(dim=-1)
+            terms["nominal_state"] = torch.square(left_theta - right_theta) + 10.0 * torch.square(left_len - right_len)
+            terms.pop("base_height", None)
+            terms.pop("lin_vel_z", None)
+            terms.pop("dof_vel", None)
+            terms.pop("dof_acc", None)
+            terms.pop("action_smooth", None)
+            terms.pop("dof_pos_limits", None)
+            terms.pop("tracking_ang_vel_enhance", None)
+        return terms
+
+    def _postprocess_reward_terms(self, reward_terms: dict) -> dict:
         return reward_terms
+
+    def _get_rewards(self) -> torch.Tensor:
+        """Aggregate the exact WYW/Fudan terms using the base bookkeeping contract."""
+        reward_terms = self._postprocess_reward_terms(self._compute_fdu_reward_terms())
+        rewards = {
+            key: self.cfg.rewards[key] * reward_terms.get(key, torch.zeros(self.num_envs, device=self.device)) * self.step_dt
+            for key in self.cfg.rewards
+        }
+        clip_single = getattr(self.cfg, "clip_single_reward", None)
+        if clip_single is not None:
+            bound = abs(float(clip_single)) * self.step_dt
+            rewards = {key: torch.clamp(value, -bound, bound) for key, value in rewards.items()}
+        if bool(getattr(self.cfg, "only_positive_rewards", False)) and rewards:
+            total = torch.stack(list(rewards.values()), dim=-1).sum(dim=-1)
+            rewards[next(iter(rewards))] += torch.clamp_min(-total, 0.0)
+        bad = self._numerical_safety_reset_buf
+        for key, value in rewards.items():
+            value = torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
+            rewards[key] = torch.where(bad, torch.zeros_like(value), value)
+        self._last_reward_terms = {key: value.detach() for key, value in rewards.items()}
+        for key, value in rewards.items():
+            self._episode_sums.setdefault(key, torch.zeros(self.num_envs, device=self.device))
+            self._episode_sums[key] += value
+        total_reward = torch.stack([rewards[key] for key in self.cfg.rewards], dim=-1).sum(dim=-1)
+        self._last_total_reward = total_reward.detach()
+        sync_cmd_iteration = getattr(self, "_sync_command_generator_training_iteration", None)
+        if sync_cmd_iteration is not None:
+            sync_cmd_iteration()
+        self.command_generator.compute(self.step_dt)
+        self._resample_custom_cmd(self.command_generator.command_counter)
+        self.command = self.command_generator.command.clone()
+        self._on_command_updated()
+        self._apply_predefined_reset_air_command_limits()
+        return torch.nan_to_num(total_reward, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Use Fudan's persisted tilt failure while retaining numerical safety."""
         _, time_out = super()._get_dones()
+        time_out = time_out | self._get_rough_terrain_boundary_time_out()
         immediate_terminate = self._numerical_safety_reset_buf.clone()
         bad_orientation = self.robot.data.projected_gravity_b[:, 2] > -0.1
         orientation_terminate = self._apply_termination_duration(
@@ -352,3 +498,27 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         if self.cfg.play is True and not bool(getattr(self.cfg, "play_keep_done_reset", False)):
             terminate.zero_()
         return terminate, time_out
+
+    def _get_rough_terrain_boundary_time_out(self) -> torch.Tensor:
+        """Classify leaving a generated rough tile as timeout, never as failure."""
+        terrain_cfg = getattr(self.cfg, "terrain", None)
+        terrain_gen = getattr(terrain_cfg, "terrain_generator", None)
+        if terrain_gen is None or getattr(terrain_cfg, "terrain_type", "plane") == "plane":
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        size = getattr(terrain_gen, "size", None)
+        if size is None or len(size) < 2:
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        half_x = 0.5 * float(getattr(terrain_gen, "num_rows", 0)) * float(size[0])
+        half_y = 0.5 * float(getattr(terrain_gen, "num_cols", 0)) * float(size[1])
+        cfg = getattr(self.cfg, "rough_terrain_boundary_reset_cfg", {})
+        if bool(cfg.get("use_inner_terrain_area", False)):
+            pass
+        else:
+            border = float(getattr(terrain_gen, "border_width", 0.0))
+            half_x += border
+            half_y += border
+        margin = max(float(cfg.get("margin", 0.5)), 0.0)
+        half_x = max(half_x - margin, 0.0)
+        half_y = max(half_y - margin, 0.0)
+        root = self.robot.data.root_pos_w
+        return (torch.abs(root[:, 0]) > half_x) | (torch.abs(root[:, 1]) > half_y)

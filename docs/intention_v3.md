@@ -10,10 +10,11 @@
 
 wyw 包含 Flat、Rough、Jump 及其 Play 变体。迁移目标是：
 
-1. 机器人使用本仓库的 `Wheelbipe_V14_2_CFG`（from_hu，含被动云台）。
+1. 机器人完全使用指定本体：`robot_models/fdu_infantry_V4_mujoco/meshes/infantry_V2.urdf`，包括
+   `base_link_del.STL`、云台相关实体、全部腿/轮 STL、质量、质心和惯量；工程配置为 `Wheelbipe_FDU_CFG`。
 2. 与机器人结构无关的训练语义精确对齐 Fudan，包括时序、公式、裁剪顺序和随机量含义，而不只是
    奖励项名称或近似效果相似。
-3. 与机器人结构绑定的量按语义映射到 from_hu，并通过具名配置显式记录，不依赖隐含数组顺序。
+3. 与机器人结构绑定的量按语义映射到 FDU 闭链本体，并通过具名配置显式记录，不依赖隐含数组顺序。
 4. 使用 Isaac Lab 的 `DirectRLEnv`、`configclass` 和事件项风格实现，不复制 legged_gym 框架代码。
 
 Fudan 权威源为以下工作树，版本 `403f391c481566560293f6fbf68aa93bdceb583a`：
@@ -24,7 +25,7 @@ Fudan 权威源为以下工作树，版本 `403f391c481566560293f6fbf68aa93bdceb
   `fudan_rl_wheel_leg/jump/logs/wheel_legged/p60.50.2目前测试下来最好的/`
 
 若本文与上述版本的可执行代码冲突，先写 golden test 复现 Fudan 行为，再更新本文；不能直接用当前
-from_hu 实现或历史训练 YAML 猜测目标行为。
+Isaac Lab 实现或历史训练 YAML 猜测目标行为。
 
 已训练 Jump 快照仍包含 §7.4 的 air-time bug，因此该行为属于基线兼容范围；但快照还把
 `added_mass_range` 改为 `[-2, 23]` 并启用了 action delay，这两项不随 bug 一并迁入，本文仍以当前
@@ -32,19 +33,32 @@ base config 的 `[-2, 3]` 和 `randomize_action_delay=False` 为目标。
 
 ### 0.1 已确认的有意差异
 
-以下值不照抄 Fudan，属于已确认的 from_hu 适配：
+以下值不照抄 Fudan，属于已确认的 FDU 本体适配：
 
 | 项               |                         wyw 目标 | 原因                                      |
 | ---------------- | -------------------------------: | ----------------------------------------- |
-| 机器人           |          `Wheelbipe_V14_2_CFG` | 迁移目标本体                              |
-| 高度命令范围     |               `[0.20, 0.42]` m | from_hu 几何量纲                          |
+| 机器人           |          `Wheelbipe_FDU_CFG` | 指定 `infantry_V2.urdf` 的闭链并联本体      |
+| 高度命令范围     |               `[0.20, 0.42]` m | FDU 几何量纲                              |
 | 默认高度命令     |                       `0.22` m | 已确认                                    |
 | 高度命令观测缩放 |                          `1.0` | 已确认；Fudan 此处为`5.0`               |
-| 腿部 PD 初值     |                      Kp=60、Kd=2 | 先保留 from_hu 本体配置，训练前后单独校准 |
-| 动作顺序         | 每侧腿关节后接该侧车轮，先左后右 | 用户已确认；当前无部署兼容约束            |
+| 腿部 PD 初值     |                      Kp=20、Kd=1 | FDU 仿真控制初值；Jump 覆写为 Kp=6、Kd=0.5 |
+| 动作顺序         | `lf0,l20,l_wheel,rf0,r20,r_wheel` | 用户已确认；当前无部署兼容约束            |
 
-滞空目标高度、收腿/伸腿目标长度仍需 from_hu 几何标定，见 §12。除此之外，不允许为了复用现成
+滞空目标高度、收腿/伸腿目标长度仍需 FDU 几何标定，见 §12。除此之外，不允许为了复用现成
 V3/V14 奖励或命令机制而改变 Fudan 语义。
+
+### 0.2 本体转换和已完成标定
+
+- URDF 清理脚本为 `robot_models/fdu_infantry_V4_mujoco/build_infantry_closed_urdf.py`，输入只允许是
+  `meshes/infantry_V2.urdf`；不能替换成同目录 `urdf/infantry_V2.urdf`。清理只修复导入所需的零关节
+  限位、`r21_Link` 的关节命名和导出为零的 `l20_Link` 惯量，不改 `base_link_del` 的质量/质心/惯量。
+- USD 转换后由 `add_loop_joints.py` 添加四个球铰闭链约束，并将其排除出 reduced-coordinate articulation；
+  四个驱动杆仍是实际 articulation DOF，不存在 dummy spring DOF。
+- CPU 标定报告见 [`fdu_calibration_report.json`](./fdu_calibration_report.json)：14 DOF、15 刚体、根质量
+  11.718 kg、10 步静置状态有限。报告中的 actuator natural order 仅用于审计，策略顺序始终按 §2.1 的
+  具名映射。
+- `effort_limit`、PD 和动作缩放是仿真控制假设，不等于真实电机额定参数；真实驱动器的力矩常数、减速比、
+  电流限幅和编码器方向仍需硬件辨识后单独写入配置版本。
 
 ## 1. 架构和配置所有权
 
@@ -55,7 +69,7 @@ DirectRLEnv
      └─ WheelbipeWywEnv               wyw 独立任务族
 ```
 
-- `WheelbipeWywEnv` 直接继承 `Wheelbipe25V3Env`，不得继承 V13/V14 任务类。
+- `WheelbipeWywEnv` 直接继承 `Wheelbipe25V3Env`，不得继承 V13/V14 任务类；机器人由 `Wheelbipe_FDU_CFG` 提供。
 - Flat、Rough、Jump 配置均直接继承 WYW base config；Jump 不继承 Flat，Rough 也不继承 V14 config。
 - 可以复用 V3 的关节发现、控制器、接触传感器、扫描器和数值安全设施，但任务级观测、复位、终止、
   命令、课程和奖励聚合由 WYW 覆写。
@@ -65,8 +79,8 @@ DirectRLEnv
   `WYW_ROBOT` 分支构造配置，也禁止把机器人选择、几何目标、阈值藏在模块级条件中。
 - 模块常量只保存真正不随任务实例变化的维度、字段名和默认顺序；任务可调值放入 config。
 
-云台不属于动作或观测关节。复位时回到 asset 默认状态；pitch 使用资产现有 PD 保持，yaw 使用现有
-阻尼自由设置。WYW 不引入 V14 云台动作。
+云台不属于动作或观测关节。复位时回到资产默认状态；其质量、STL 和惯量来自指定 URDF。WYW 不引入
+云台动作。
 
 ## 2. 动作、关节和机体映射
 
@@ -76,12 +90,12 @@ DirectRLEnv
 
 | 索引 | WYW 关节               | 控制方式 | Fudan 语义        |
 | ---: | ---------------------- | -------- | ----------------- |
-|    0 | `left_front1_joint`  | 位置     | left leg joint 0  |
-|    1 | `left_rear1_joint`   | 位置     | left leg joint 1  |
-|    2 | `left_wheel_joint`   | 速度     | left wheel        |
-|    3 | `right_front1_joint` | 位置     | right leg joint 0 |
-|    4 | `right_rear1_joint`  | 位置     | right leg joint 1 |
-|    5 | `right_wheel_joint`  | 速度     | right wheel       |
+|    0 | `lf0_Joint`          | 位置     | left front drive bar  |
+|    1 | `l20_Joint`          | 位置     | left rear drive bar   |
+|    2 | `l_wheel_Joint`      | 速度     | left wheel            |
+|    3 | `rf0_Joint`          | 位置     | right front drive bar |
+|    4 | `r20_Joint`          | 位置     | right rear drive bar  |
+|    5 | `r_wheel_Joint`      | 速度     | right wheel           |
 
 对应的语义索引必须在初始化时由精确名称解析并断言：
 
@@ -97,12 +111,18 @@ RIGHT_ACTION_IDS = [3, 4, 5]
 `[:4]` 或 `[0:2, 3:5]` 之类与布局偶然耦合的切片。
 
 动作值是网络原始输出。腿目标为 `default_joint_pos + 0.5 * action`，轮目标速度为 `10.0 * action`
-rad/s；二者使用语义 mask 分别生成。若保留引擎的轮速上限，应在配置和 YAML 中显式写出，并用测试证明
-正常动作范围不会意外触发。
+rad/s；二者使用语义 mask 分别生成。Fudan 原训练和指定闭链 MuJoCo sim2sim 都没有对 `vel_ref` 做 wheel
+target speed clamp：它们以速度误差经 wheel damping 生成力矩，再裁剪轮力矩。原 Isaac Gym URDF 的
+`1500 rad/s` 和指定 `infantry_V2.urdf` 对全部关节统一写入的 `1000 rad/s` 都不是策略工作轮速标定，不能作为
+WYW 的运行时上限。当前 WYW 仍采用 Isaac Lab velocity-target adapter，因此显式设 `60 rad/s`：0.06 m 轮半径下，
+Fudan 最大前进命令 2.1 m/s 对应 35 rad/s；最大偏航命令 2 rad/s、半轮距约 0.1877 m 再贡献约 6.3 rad/s，
+极端组合约 41.3 rad/s，60 rad/s 留有约 45% 裕量。FDU asset 的 `velocity_limit`、`velocity_limit_sim`、WYW
+配置 `max_wheel_vel` 和运行时 clamp 必须同时保持为 `60 rad/s`。这是 adapter 兼容边界，不是由
+`clip_actions=100` 推算的 Fudan 硬限制。
 
 ### 2.2 虚拟腿几何
 
-Fudan 的 `L0`、`theta0` 是腿根到轮中心的虚拟杆长度和机身系摆角。from_hu 为五连杆闭链，WYW 从
+Fudan 的 `L0`、`theta0` 是腿根到轮中心的虚拟杆长度和机身系摆角。FDU 为五连杆闭链，WYW 从
 仿真实际轮连杆位姿计算，不照搬二连杆解析式：
 
 ```python
@@ -355,7 +375,7 @@ Jump 只包含下表项目，不包含 `tracking_ang_vel_enhance`、`base_height
 | `orientation`              |  -25.0 | §7.2                                                                  |
 | `ang_vel_xy`               |  -0.10 | §7.2                                                                  |
 | `nominal_state`            |   -1.0 | `(thetaL-thetaR)^2 + 10*(L0L-L0R)^2`                                 |
-| `collision`                |   -1.0 | 下述 from_hu body 映射                                                 |
+| `collision`                |   -1.0 | 下述 FDU body 映射                                                     |
 
 Jump 接触状态严格按两个 wheel 的世界系竖直接触力计算：
 
@@ -388,15 +408,14 @@ base_air_time *= ~in_flight
 `base_air_time`，第一版兼容实现也不额外清零；它只会在检测为滞空时被上述 mask 清零。该跨 episode
 行为必须进入 golden test，避免以后重构时无意改变基线。
 
-Fudan Jump 的 collision body 为两侧非轮腿体和 base。from_hu 映射为：
+Fudan Jump 的 collision body 为两侧非轮腿体和 base。FDU 映射为：
 
 ```text
-base_link
-.*_front1_link, .*_front2_link, .*_front3_link, .*_front4_link
-.*_rear1_link,  .*_rear2_link
+base_link_del
+[lr]f[01]_Link, [lr]2[0-3]_Link
 ```
 
-不包含 `.*_wheel_link`，也不把这些 body 设为 termination contact。初始化时记录正则解析后的精确名称，
+不包含 `[lr]_wheel_Link`，也不把这些 body 设为 termination contact。初始化时记录正则解析后的精确名称，
 测试集合中不得意外包含云台或车轮。
 
 ## 8. 域随机化和材料
@@ -532,10 +551,10 @@ level += move_up - move_down
    跨 reset 状态；完成 Fudan 行为对齐后，新增独立实验改为“滞空累计、落地奖励后清零”，比较跳跃频率、
    滞空时间、落地稳定性和总回报。修正版必须使用新实验名，不能覆盖兼容基线。
 2. **腿根偏移**：从 USD/仿真读取左右 hip offset，确认 §2.2 的几何原点。不能继续默认 hip x/z=0。
-3. **L0 目标**：Fudan 的 `L_tuck=0.16` m、`L_extend=0.31` m 只可作为临时占位；用 from_hu 可达
+3. **L0 目标**：Fudan 的 `L_tuck=0.16` m、`L_extend=0.31` m 只可作为临时占位；用 FDU 可达
    腿长范围标定后设置 WYW config。
-4. **滞空高度**：Fudan `H_flight=0.65` m；from_hu 暂定 0.60 m，需用 base root z 分布而非视觉估计校准。
-5. **Jump PD**：from_hu Kp=60/Kd=2 明显硬于 Fudan Jump Kp=6/Kd=0.5。先保持已确认初值，但在固定
+4. **滞空高度**：Fudan `H_flight=0.65` m；FDU 当前使用 0.65 m，仍需用 base root z 分布而非视觉估计复核。
+5. **Jump PD**：FDU Jump 使用 Kp=6/Kd=0.5；在固定
    动作下测量可达腿长、峰值力矩、起跳速度和接触稳定性，再决定 Jump 专用 PD。
 6. **动作方向**：左右 front/rear 关节的正方向可能与 Fudan 镜像定义不同。动作顺序已经确定，但仍需
    单关节正动作测试确认 `theta0` 和 `L0` 变化方向；必要时用显式 sign map，不改变网络数组顺序。

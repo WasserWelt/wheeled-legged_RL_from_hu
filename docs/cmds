@@ -17,4 +17,4 @@ DISPLAY=:1 python -m mujoco.viewer --mjcf=mjmodel.xml
 cd /home/wyw/my_tasks/RL_2026/wheeled-legged_RL_from_hu 
 source ~/anaconda3/etc/profile.d/conda.sh 
 conda activate isaaclab_2 
-python scripts/rsl_rl/train.py --task=Robotics-Wheelbipe-V14-wyw-Flat-v1 --num_envs=1 --max_iterations=3
+python scripts/rsl_rl/train.py --task=Robotics-Wheelbipe-FDU-wyw-Flat-v1 --num_envs=1 --max_iterations=3
