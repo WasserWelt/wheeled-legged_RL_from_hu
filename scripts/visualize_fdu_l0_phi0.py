@@ -27,6 +27,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--output", default="docs/fdu_validation/video/fdu_l0_phi0.mp4")
 parser.add_argument("--seconds", type=float, default=10.0)
 parser.add_argument("--fps", type=int, default=30)
+parser.add_argument(
+    "--physics-hz",
+    type=float,
+    default=400.0,
+    help="Physics and continuous command update frequency (default: 400 Hz)",
+)
 parser.add_argument("--width", type=int, default=800, help="Isaac render width")
 parser.add_argument("--height", type=int, default=720)
 AppLauncher.add_app_launcher_args(parser)
@@ -233,15 +239,15 @@ def _test_trajectory(time_s: float, duration_s: float) -> tuple[float, float, st
 
 
 def main() -> None:
-    if args_cli.seconds <= 0.0 or args_cli.fps <= 0:
-        raise ValueError("--seconds and --fps must be positive")
+    if args_cli.seconds <= 0.0 or args_cli.fps <= 0 or args_cli.physics_hz <= 0.0:
+        raise ValueError("--seconds, --fps and --physics-hz must be positive")
     if args_cli.width < 640 or args_cli.height < 720:
         raise ValueError("use --width >= 640 and --height >= 720 so both geometry panels remain readable")
     # The loop closures are maximal-coordinate spherical constraints outside
     # the reduced-coordinate articulation.  At 200 Hz they enter a persistent
     # millimetre-scale limit cycle even under a static target.  The measured
     # 0.20--0.335 m trajectory is stable at 400 Hz; video FPS stays unchanged.
-    sim_dt = 0.0025
+    sim_dt = 1.0 / args_cli.physics_hz
     sim = SimulationContext(
         sim_utils.SimulationCfg(dt=sim_dt, render_interval=1, device=args_cli.device, gravity=(0.0, 0.0, 0.0))
     )
@@ -326,8 +332,8 @@ def main() -> None:
     max_phi0_symmetry_error = 0.0
     try:
         for frame_index in range(frame_count):
-            # 400 Hz continuous command updates.  Capture at 30 Hz with a
-            # fractional 6/7-step cadence instead of holding one target for a
+            # Continuous command updates at the selected physics rate. Capture
+            # at the video FPS with a fractional cadence instead of holding one target for a
             # whole video frame (which caused visible closed-loop twitching).
             target_physics_step = math.ceil((frame_index + 1) / (args_cli.fps * sim_dt))
             while physics_step < target_physics_step:
@@ -413,7 +419,10 @@ def main() -> None:
         writer.release()
 
     print(f"FDU L0/PHI0 VIDEO WRITTEN: {output}")
-    print(f"frames={frame_count} fps={args_cli.fps} size={video_size[0]}x{video_size[1]}")
+    print(
+        f"frames={frame_count} fps={args_cli.fps} physics_hz={args_cli.physics_hz:g} "
+        f"size={video_size[0]}x{video_size[1]}"
+    )
     print(
         "measured_physical_l0_range="
         f"left[{measured_l0_min[0]:.4f}, {measured_l0_max[0]:.4f}] m "
