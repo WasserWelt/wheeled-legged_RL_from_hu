@@ -24,11 +24,18 @@ Joint roles (14 DOF total):
 The selected URDF's base mesh and inertial block are used verbatim.
 """
 
+import math
+
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
 from isaaclab.actuators import IdealPDActuatorCfg
 
 from agent_world import AssetPath
+
+
+# Exact vertical equivalent-leg solution for infantry_V2.urdf:
+# pi/2 - atan2(coupler=0.208, crank=0.17472).
+_VERTICAL_JOINT_CENTER = math.pi / 2.0 - math.atan2(0.208, 0.17472)
 
 
 Wheelbipe_FDU_CFG = ArticulationCfg(
@@ -54,14 +61,16 @@ Wheelbipe_FDU_CFG = ArticulationCfg(
         ),
     ),
     init_state=ArticulationCfg.InitialStateCfg(
-        # zero-joint pose is the assembly config the loops were anchored at.
-        # spawn height is a placeholder -- tune so the wheels sit near the ground.
-        pos=(0.0, 0.0, 0.5),
+        # PhysX scan: this symmetric pose gives theta0=0 and puts the 0.06 m
+        # wheels on a flat floor at root z ~=0.245--0.249 m.  Passive joints
+        # remain at the imported loop assembly zeros and settle within the
+        # loop tolerance; only the four physical drive bars are commanded.
+        pos=(0.0, 0.0, 0.25),
         joint_pos={
-            "rf0_Joint": 0.0,
-            "lf0_Joint": 0.0,
-            "r20_Joint": 0.0,
-            "l20_Joint": 0.0,
+            "rf0_Joint": -_VERTICAL_JOINT_CENTER,
+            "lf0_Joint": _VERTICAL_JOINT_CENTER,
+            "r20_Joint": -_VERTICAL_JOINT_CENTER,
+            "l20_Joint": _VERTICAL_JOINT_CENTER,
             "rf1_Joint": 0.0,
             "lf1_Joint": 0.0,
             "r2[123]_Joint": 0.0,
@@ -76,7 +85,7 @@ Wheelbipe_FDU_CFG = ArticulationCfg(
             joint_names_expr=["lf0_Joint", "l20_Joint", "rf0_Joint", "r20_Joint"],
             stiffness=20.0,
             damping=1.0,
-            effort_limit=30.0,
+            effort_limit=40.0,
             velocity_limit=30.0,
             armature=0.0,
         ),

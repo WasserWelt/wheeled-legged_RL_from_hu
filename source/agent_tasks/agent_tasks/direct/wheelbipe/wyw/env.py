@@ -30,12 +30,16 @@ from __future__ import annotations
 from typing import Sequence
 
 import torch
-from isaaclab.utils.math import quat_apply
 
 from agent_tasks.direct.wheelbipe.wheelbipe25_v3.env import Wheelbipe25V3Env
 
 from . import wyw_constants as C
-from .fdu_mapping import POLICY_JOINT_NAMES, update_buggy_fudan_airtime
+from .fdu_mapping import (
+    POLICY_JOINT_NAMES,
+    compute_fdu_equivalent_leg_state,
+    project_fdu_leg_targets,
+    update_buggy_fudan_airtime,
+)
 
 
 class WheelbipeWywEnv(Wheelbipe25V3Env):
@@ -104,7 +108,16 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self.wheel_actions = self.wheel_action_scale * self._actions[:, C.WYW_WHEEL_ACTION_IDS]
 
     def _apply_action(self) -> None:
-        leg_targets = torch.clamp(self.leg_actions, self.cfg.lower_joint_limit, self.cfg.upper_joint_limit)
+        desired = self.leg_actions
+        leg_targets = torch.stack(
+            project_fdu_leg_targets(
+                desired[:, 0], desired[:, 1], desired[:, 2], desired[:, 3],
+                min_length=self.cfg.wyw_safe_l0_range[0],
+                max_length=self.cfg.wyw_safe_l0_range[1],
+                max_abs_theta=self.cfg.wyw_safe_theta0_abs,
+            ),
+            dim=-1,
+        )
         wheel_targets = torch.clamp(self.wheel_actions, -self.max_wheel_vel, self.max_wheel_vel)
         self.robot.set_joint_position_target(leg_targets, joint_ids=self._wyw_leg_joint_idx)
         self.robot.set_joint_velocity_target(wheel_targets, joint_ids=self._wyw_wheel_joint_idx)
@@ -335,14 +348,20 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
     # 跳跃奖励注入（Jump 任务）
     # ------------------------------------------------------------------ #
     def _get_wyw_virtual_leg_geometry(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return body-frame wheel positions, hip-to-wheel lengths and angles."""
-        root_quat_inv, wheel_pos_b, _, _, _ = self._get_root_quat_inv_and_wheel_pos_b()
-        root_pos = self.robot.data.root_pos_w
-        hip_rel_w = self.robot.data.body_pos_w[:, self._wyw_hip_link_idx] - root_pos.unsqueeze(1)
-        hip_pos_b = quat_apply(root_quat_inv.unsqueeze(1).expand(-1, 2, -1), hip_rel_w)
-        wheel_from_hip = wheel_pos_b[:, :, [0, 2]] - hip_pos_b[:, :, [0, 2]]
-        lengths = torch.linalg.vector_norm(wheel_from_hip, dim=-1).clamp_min(1.0e-6)
-        angles = torch.atan2(-wheel_from_hip[:, :, 0], -wheel_from_hip[:, :, 1])
+        """Return wheel poses plus analytic kite ``L0/theta0``.
+
+        The specified FDU body is an equivalent kite mechanism driven by four
+        entity bars.  Computing geometry from the actual four joint angles is
+        deterministic and avoids solver/link-pose lag; the independent PhysX
+        wheel positions remain available as the first return value for scans.
+        """
+        _, wheel_pos_b, _, _, _ = self._get_root_quat_inv_and_wheel_pos_b()
+        q = self.robot.data.joint_pos[:, self._wyw_leg_joint_idx]
+        left_l0, left_theta, right_l0, right_theta = compute_fdu_equivalent_leg_state(
+            q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+        )
+        lengths = torch.stack((left_l0, right_l0), dim=-1).clamp_min(1.0e-6)
+        angles = torch.stack((left_theta, right_theta), dim=-1)
         return wheel_pos_b, lengths, angles
 
     def _compute_wyw_jump_terms(self, leg_lengths: torch.Tensor) -> dict[str, torch.Tensor]:

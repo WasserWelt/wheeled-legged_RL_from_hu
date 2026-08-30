@@ -1,0 +1,106 @@
+{
+  "physics": {
+    "usd": "project default",
+    "dt_s": 0.0025,
+    "position_iterations": 16,
+    "velocity_iterations": 6,
+    "external_forces_every_iteration": false
+  },
+  "actuators": {
+    "drive_stiffness": 20.0,
+    "drive_damping": 1.0,
+    "passive_damping": 0.01
+  },
+  "samples": [
+    {
+      "target_l0_m": 0.1,
+      "drive_target_rad": [
+        -0.07840335369110107,
+        1.4757230281829834,
+        0.07840335369110107,
+        -1.4757230281829834
+      ],
+      "drive_tracking_rms_rad": 0.027891529724001884,
+      "drive_tracking_max_rad": 0.04425470158457756,
+      "drive_velocity_rms_rad_s": 10.721614837646484,
+      "drive_velocity_max_rad_s": 24.88429832458496,
+      "passive_velocity_rms_rad_s": 5.053281307220459,
+      "passive_velocity_max_rad_s": 10.05260181427002,
+      "physical_l0_mean_m": [
+        0.1009409949183464,
+        0.10096210241317749
+      ],
+      "physical_l0_std_m": [
+        0.004285644739866257,
+        0.0043058996088802814
+      ],
+      "physical_l0_peak_to_peak_m": [
+        0.0119386687874794,
+        0.012018680572509766
+      ],
+      "left_right_l0_rms_error_m": 0.007736241910606623,
+      "loop_gap_rms_mm": 0.6418469711206853,
+      "loop_gap_max_mm": 1.106281764805317
+    },
+    {
+      "target_l0_m": 0.285,
+      "drive_target_rad": [
+        0.7583129405975342,
+        0.6390068531036377,
+        -0.7583129405975342,
+        -0.6390068531036377
+      ],
+      "drive_tracking_rms_rad": 2.609942384879105e-06,
+      "drive_tracking_max_rad": 5.125999450683594e-06,
+      "drive_velocity_rms_rad_s": 0.00011882459511980414,
+      "drive_velocity_max_rad_s": 0.0006525302305817604,
+      "passive_velocity_rms_rad_s": 9.01144157978706e-05,
+      "passive_velocity_max_rad_s": 0.0006464804173447192,
+      "physical_l0_mean_m": [
+        0.2848612070083618,
+        0.28486132621765137
+      ],
+      "physical_l0_std_m": [
+        5.323604312934549e-08,
+        7.222372033766078e-08
+      ],
+      "physical_l0_peak_to_peak_m": [
+        2.682209014892578e-07,
+        2.980232238769531e-07
+      ],
+      "left_right_l0_rms_error_m": 1.1596608118225049e-07,
+      "loop_gap_rms_mm": 0.00011092751606156526,
+      "loop_gap_max_mm": 0.0003068336980049935
+    },
+    {
+      "target_l0_m": 0.335,
+      "drive_target_rad": [
+        1.0157427787780762,
+        0.3815770149230957,
+        -1.0157427787780762,
+        -0.3815770149230957
+      ],
+      "drive_tracking_rms_rad": 7.595230272272602e-06,
+      "drive_tracking_max_rad": 1.1801719665527344e-05,
+      "drive_velocity_rms_rad_s": 0.00027407435118220747,
+      "drive_velocity_max_rad_s": 0.0012547248043119907,
+      "passive_velocity_rms_rad_s": 0.0002497329842299223,
+      "passive_velocity_max_rad_s": 0.001472433446906507,
+      "physical_l0_mean_m": [
+        0.3338073790073395,
+        0.33380669355392456
+      ],
+      "physical_l0_std_m": [
+        7.454722350530574e-08,
+        6.98028870260714e-08
+      ],
+      "physical_l0_peak_to_peak_m": [
+        3.5762786865234375e-07,
+        4.172325134277344e-07
+      ],
+      "left_right_l0_rms_error_m": 6.810735158069292e-07,
+      "loop_gap_rms_mm": 0.00011250158848952196,
+      "loop_gap_max_mm": 0.0002772777349946409
+    }
+  ]
+}

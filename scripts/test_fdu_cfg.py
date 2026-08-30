@@ -46,6 +46,10 @@ def main():
         actuator_groups[name] = js
         lines.append(f"actuator '{name}': {js}")
     wheel_actuator = robot.actuators["wheel"]
+    leg_actuator = robot.actuators["legs_act"]
+    assert leg_actuator.cfg.effort_limit == 40.0
+    assert leg_actuator.cfg.stiffness == 20.0
+    assert leg_actuator.cfg.damping == 1.0
     assert wheel_actuator.cfg.velocity_limit == 60.0
     assert wheel_actuator.cfg.velocity_limit_sim == 60.0
     assert wheel_actuator.cfg.effort_limit == 5.0
@@ -57,6 +61,7 @@ def main():
             60.0,
             rel_tol=1.0e-6,
         ), f"{joint_name} velocity limit is {joint_velocity_limit}, expected 60.0"
+    lines.append("leg control: Kp=20.0, Kd=1.0, hard effort limit=40.0 N*m")
     lines.append("wheel limits: velocity=60.0 rad/s, Plane training effort=5.0 N*m")
     lines.append("ALL ACTUATOR GROUPS RESOLVED OK")
     lines.append("=" * 60)
@@ -107,7 +112,10 @@ def main():
         },
         "finite_after_10_steps": True,
     }
-    for report_path in ("/tmp/fdu_calibration_report.json", "docs/fdu_calibration_report.json"):
+    for report_path in (
+        "/tmp/fdu_calibration_report.json",
+        "docs/fdu_validation/geometry/fdu_calibration_report.json",
+    ):
         with open(report_path, "w", encoding="utf-8") as fh:
             json.dump(report, fh, indent=2, sort_keys=True)
     print("FDU CALIBRATION TEST PASSED", flush=True)

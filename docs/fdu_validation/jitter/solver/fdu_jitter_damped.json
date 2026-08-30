@@ -1,0 +1,135 @@
+{
+  "physics": {
+    "dt_s": 0.005,
+    "position_iterations": 16,
+    "velocity_iterations": 6,
+    "external_forces_every_iteration": false
+  },
+  "actuators": {
+    "drive_stiffness": 20.0,
+    "drive_damping": 5.0,
+    "passive_damping": 0.5
+  },
+  "samples": [
+    {
+      "target_l0_m": 0.1,
+      "drive_target_rad": [
+        -0.07840335369110107,
+        1.4757230281829834,
+        0.07840335369110107,
+        -1.4757230281829834
+      ],
+      "drive_tracking_rms_rad": 0.23526763916015625,
+      "drive_tracking_max_rad": 0.5638444423675537,
+      "drive_velocity_rms_rad_s": 9.495909690856934,
+      "drive_velocity_max_rad_s": 25.673147201538086,
+      "passive_velocity_rms_rad_s": 26.842304229736328,
+      "passive_velocity_max_rad_s": 60.00006866455078,
+      "physical_l0_mean_m": [
+        0.12944309413433075,
+        0.12774185836315155
+      ],
+      "physical_l0_std_m": [
+        0.017826516181230545,
+        0.01812371052801609
+      ],
+      "physical_l0_peak_to_peak_m": [
+        0.06525155901908875,
+        0.06507822126150131
+      ],
+      "left_right_l0_rms_error_m": 0.004954712465405464,
+      "loop_gap_rms_mm": 1.103529124520719,
+      "loop_gap_max_mm": 2.4096297565847635
+    },
+    {
+      "target_l0_m": 0.2,
+      "drive_target_rad": [
+        0.4007366895675659,
+        0.9965832233428955,
+        -0.4007366895675659,
+        -0.9965832233428955
+      ],
+      "drive_tracking_rms_rad": 0.14207521080970764,
+      "drive_tracking_max_rad": 0.3125554919242859,
+      "drive_velocity_rms_rad_s": 5.465332508087158,
+      "drive_velocity_max_rad_s": 18.456226348876953,
+      "passive_velocity_rms_rad_s": 26.79503059387207,
+      "passive_velocity_max_rad_s": 60.00004196166992,
+      "physical_l0_mean_m": [
+        0.22476565837860107,
+        0.22458645701408386
+      ],
+      "physical_l0_std_m": [
+        0.01029099803417921,
+        0.009797632694244385
+      ],
+      "physical_l0_peak_to_peak_m": [
+        0.04548925161361694,
+        0.041991814970970154
+      ],
+      "left_right_l0_rms_error_m": 0.00955117866396904,
+      "loop_gap_rms_mm": 0.3932453691959381,
+      "loop_gap_max_mm": 0.8523307624273002
+    },
+    {
+      "target_l0_m": 0.285,
+      "drive_target_rad": [
+        0.7583129405975342,
+        0.6390068531036377,
+        -0.7583129405975342,
+        -0.6390068531036377
+      ],
+      "drive_tracking_rms_rad": 0.01977645792067051,
+      "drive_tracking_max_rad": 0.0554618239402771,
+      "drive_velocity_rms_rad_s": 3.8087778091430664,
+      "drive_velocity_max_rad_s": 9.756674766540527,
+      "passive_velocity_rms_rad_s": 26.70366096496582,
+      "passive_velocity_max_rad_s": 59.948890686035156,
+      "physical_l0_mean_m": [
+        0.28260231018066406,
+        0.28260117769241333
+      ],
+      "physical_l0_std_m": [
+        0.002899837912991643,
+        0.0028681450057774782
+      ],
+      "physical_l0_peak_to_peak_m": [
+        0.010251164436340332,
+        0.010078847408294678
+      ],
+      "left_right_l0_rms_error_m": 0.005301796365529299,
+      "loop_gap_rms_mm": 0.2610317897051573,
+      "loop_gap_max_mm": 0.5155647522769868
+    },
+    {
+      "target_l0_m": 0.335,
+      "drive_target_rad": [
+        1.0157427787780762,
+        0.3815770149230957,
+        -1.0157427787780762,
+        -0.3815770149230957
+      ],
+      "drive_tracking_rms_rad": 0.10117777436971664,
+      "drive_tracking_max_rad": 0.18383079767227173,
+      "drive_velocity_rms_rad_s": 2.28074312210083,
+      "drive_velocity_max_rad_s": 3.2044546604156494,
+      "passive_velocity_rms_rad_s": 27.084760665893555,
+      "passive_velocity_max_rad_s": 59.99137878417969,
+      "physical_l0_mean_m": [
+        0.32194194197654724,
+        0.32207658886909485
+      ],
+      "physical_l0_std_m": [
+        0.0010540576186031103,
+        0.0010368034709244967
+      ],
+      "physical_l0_peak_to_peak_m": [
+        0.003896355628967285,
+        0.0037082135677337646
+      ],
+      "left_right_l0_rms_error_m": 0.00014265195932239294,
+      "loop_gap_rms_mm": 0.7250651833601296,
+      "loop_gap_max_mm": 1.0104248067364097
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "settings": {
+    "dt_s": 0.002,
+    "duration_s": 3.0,
+    "initial_root_height_m": 0.4,
+    "target_l0_m": 0.16,
+    "position_iterations": 16,
+    "velocity_iterations": 6,
+    "preshape_duration_s": 1.0,
+    "self_collisions_enabled": false,
+    "ground_friction": 0.8,
+    "ground_restitution": 0.0,
+    "guided_vertical": true
+  },
+  "result": {
+    "first_contact_time_s": 0.232,
+    "peak_total_contact_force_n": 7352.4814453125,
+    "peak_contact_force_by_body_n": {
+      "base_link_del": 0.0,
+      "l20_Link": 0.0,
+      "l21_Link": 0.0,
+      "l22_Link": 0.0,
+      "l23_Link": 0.0,
+      "lf0_Link": 0.0,
+      "lf1_Link": 0.0,
+      "l_wheel_Link": 3513.416015625,
+      "r20_Link": 0.0,
+      "r21_Link": 0.0,
+      "r22_Link": 0.0,
+      "r23_Link": 0.0,
+      "rf0_Link": 0.0,
+      "rf1_Link": 0.0,
+      "r_wheel_Link": 4449.23046875
+    },
+    "min_root_height_m": 0.06668056547641754,
+    "max_abs_root_vertical_velocity_m_s": 2.3248519897460938,
+    "max_loop_gap_mm": 1.370081678032875,
+    "post_contact_max_loop_gap_mm": 1.370081678032875,
+    "max_drive_joint_speed_rad_s": 28.12332534790039,
+    "max_passive_joint_speed_rad_s": 35.47698211669922,
+    "max_drive_tracking_error_rad": 0.3462908864021301,
+    "final_drive_tracking_error_rad": 0.3088388442993164,
+    "peak_applied_drive_torque_nm": 30.0,
+    "tail_root_height_peak_to_peak_mm": 3.1670257449150085,
+    "tail_l0_peak_to_peak_mm": [
+      3.1783878803253174,
+      2.996593713760376
+    ],
+    "final_l0_m": [
+      0.1282835453748703,
+      0.12826083600521088
+    ]
+  }
+}

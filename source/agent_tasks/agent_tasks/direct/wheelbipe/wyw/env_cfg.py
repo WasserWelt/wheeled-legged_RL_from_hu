@@ -248,7 +248,9 @@ def _apply_wyw_common(cfg) -> None:
         ranges.ang_vel_z = (-2.0, 2.0)
 
     # 高度命令区间锁死为当前 FDU 任务配置（rough helper 可能改写，故这里强制回来）
-    cfg.height_range = [0.20, 0.42]
+    # Static grounded scan maps the safe L0 interval [0.23, 0.31] m to an
+    # attainable root height of roughly [0.20, 0.28] m on the 0.06 m wheels.
+    cfg.height_range = [0.20, 0.28]
     if cfg.terrain.terrain_type == "plane":
         cfg.terrain.terrain_type = "usd"
         cfg.terrain.usd_path = f"{AssetPath}/usd_files/flat_ground.usda"
@@ -320,7 +322,8 @@ class FduEventCfg(EventCfg):
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=list(POLICY_JOINT_NAMES)),
-            "effort_scale_distribution_params": (0.95, 1.05),
+            # 40 N*m is a hard ceiling; domain randomization only weakens it.
+            "effort_scale_distribution_params": (0.95, 1.0),
         },
     )
     push_robot = None
@@ -378,7 +381,8 @@ class FduJumpEventCfg(FduEventCfg):
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot", joint_names=list(POLICY_JOINT_NAMES)),
-            "effort_scale_distribution_params": (0.9, 1.1),
+            # 40 N*m is a hard ceiling; domain randomization only weakens it.
+            "effort_scale_distribution_params": (0.9, 1.0),
         },
     )
     push_robot = EventTerm(
@@ -476,7 +480,14 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     wyw_joint_acc_scale = 0.0025    # critic 专用
     wyw_torque_scale = 0.05         # critic 专用
     tracking_sigma = 0.25
-    wyw_l0_tuck = 0.16
+    # Closed-chain calibration started at 30 N*m; the production hard ceiling
+    # is now 40 N*m and must be revalidated before expanding this workspace.
+    # The old 30 N*m drop tests showed that 0.20--0.22 m could stall above the
+    # target. Keep all commanded pairs on the measured assembly branch and
+    # away from the singular extremes until the 40 N*m A/B is complete.
+    wyw_safe_l0_range = (0.23, 0.31)
+    wyw_safe_theta0_abs = 0.40
+    wyw_l0_tuck = 0.23
     wyw_l0_extend = 0.31
     wyw_base_height_flight = 0.65
     wyw_takeoff_vz = 0.15

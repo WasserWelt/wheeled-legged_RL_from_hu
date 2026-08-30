@@ -1,0 +1,135 @@
+{
+  "physics": {
+    "dt_s": 0.005,
+    "position_iterations": 16,
+    "velocity_iterations": 2,
+    "external_forces_every_iteration": true
+  },
+  "actuators": {
+    "drive_stiffness": 20.0,
+    "drive_damping": 1.0,
+    "passive_damping": 0.01
+  },
+  "samples": [
+    {
+      "target_l0_m": 0.1,
+      "drive_target_rad": [
+        -0.07840335369110107,
+        1.4757230281829834,
+        0.07840335369110107,
+        -1.4757230281829834
+      ],
+      "drive_tracking_rms_rad": 0.07562317699193954,
+      "drive_tracking_max_rad": 0.15807688236236572,
+      "drive_velocity_rms_rad_s": 19.836532592773438,
+      "drive_velocity_max_rad_s": 28.188278198242188,
+      "passive_velocity_rms_rad_s": 7.405666351318359,
+      "passive_velocity_max_rad_s": 12.645320892333984,
+      "physical_l0_mean_m": [
+        0.10682447254657745,
+        0.1067793071269989
+      ],
+      "physical_l0_std_m": [
+        0.00027987227076664567,
+        0.0002840127272065729
+      ],
+      "physical_l0_peak_to_peak_m": [
+        0.0012251362204551697,
+        0.0012423619627952576
+      ],
+      "left_right_l0_rms_error_m": 4.543565592030063e-05,
+      "loop_gap_rms_mm": 0.9775086073204875,
+      "loop_gap_max_mm": 1.508797868154943
+    },
+    {
+      "target_l0_m": 0.2,
+      "drive_target_rad": [
+        0.4007366895675659,
+        0.9965832233428955,
+        -0.4007366895675659,
+        -0.9965832233428955
+      ],
+      "drive_tracking_rms_rad": 0.05698073282837868,
+      "drive_tracking_max_rad": 0.11272388696670532,
+      "drive_velocity_rms_rad_s": 18.06947898864746,
+      "drive_velocity_max_rad_s": 25.775848388671875,
+      "passive_velocity_rms_rad_s": 10.875463485717773,
+      "passive_velocity_max_rad_s": 19.587862014770508,
+      "physical_l0_mean_m": [
+        0.20794162154197693,
+        0.20790401101112366
+      ],
+      "physical_l0_std_m": [
+        0.00029863580130040646,
+        0.00029828527476638556
+      ],
+      "physical_l0_peak_to_peak_m": [
+        0.0005998462438583374,
+        0.0005993247032165527
+      ],
+      "left_right_l0_rms_error_m": 3.7602050724672154e-05,
+      "loop_gap_rms_mm": 1.3130387524142861,
+      "loop_gap_max_mm": 1.6360575100407004
+    },
+    {
+      "target_l0_m": 0.285,
+      "drive_target_rad": [
+        0.7583129405975342,
+        0.6390068531036377,
+        -0.7583129405975342,
+        -0.6390068531036377
+      ],
+      "drive_tracking_rms_rad": 0.04586455225944519,
+      "drive_tracking_max_rad": 0.07834935188293457,
+      "drive_velocity_rms_rad_s": 17.391786575317383,
+      "drive_velocity_max_rad_s": 24.655941009521484,
+      "passive_velocity_rms_rad_s": 12.32373046875,
+      "passive_velocity_max_rad_s": 23.565418243408203,
+      "physical_l0_mean_m": [
+        0.28624704480171204,
+        0.2862713038921356
+      ],
+      "physical_l0_std_m": [
+        0.0003704449045471847,
+        0.00037087759119458497
+      ],
+      "physical_l0_peak_to_peak_m": [
+        0.000743478536605835,
+        0.000744253396987915
+      ],
+      "left_right_l0_rms_error_m": 2.426395076327026e-05,
+      "loop_gap_rms_mm": 1.5792425256222486,
+      "loop_gap_max_mm": 2.2489463444799185
+    },
+    {
+      "target_l0_m": 0.335,
+      "drive_target_rad": [
+        1.0157427787780762,
+        0.3815770149230957,
+        -1.0157427787780762,
+        -0.3815770149230957
+      ],
+      "drive_tracking_rms_rad": 0.0490778349339962,
+      "drive_tracking_max_rad": 0.09542623162269592,
+      "drive_velocity_rms_rad_s": 18.824602127075195,
+      "drive_velocity_max_rad_s": 26.63759994506836,
+      "passive_velocity_rms_rad_s": 14.969196319580078,
+      "passive_velocity_max_rad_s": 27.59392547607422,
+      "physical_l0_mean_m": [
+        0.32981863617897034,
+        0.32983100414276123
+      ],
+      "physical_l0_std_m": [
+        0.00022945216915104538,
+        0.00023031752789393067
+      ],
+      "physical_l0_peak_to_peak_m": [
+        0.00045993924140930176,
+        0.0004616677761077881
+      ],
+      "left_right_l0_rms_error_m": 1.2403254004311748e-05,
+      "loop_gap_rms_mm": 1.1432194150984287,
+      "loop_gap_max_mm": 1.4575858367606997
+    }
+  ]
+}

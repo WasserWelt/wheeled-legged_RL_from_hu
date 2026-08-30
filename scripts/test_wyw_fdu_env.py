@@ -64,6 +64,10 @@ def main():
         assert env.robot.cfg.actuators["wheel"].velocity_limit_sim == 60.0
         expected_wheel_effort = 50.0 if args_cli.variant == "jump" else 5.0
         assert env.robot.cfg.actuators["wheel"].effort_limit == expected_wheel_effort
+        assert env.robot.cfg.actuators["legs_act"].effort_limit == 40.0
+        expected_leg_pd = (6.0, 0.5) if args_cli.variant == "jump" else (20.0, 1.0)
+        assert env.robot.cfg.actuators["legs_act"].stiffness == expected_leg_pd[0]
+        assert env.robot.cfg.actuators["legs_act"].damping == expected_leg_pd[1]
         assert env.cfg.commands.heading_command is False
         assert env.cfg.commands.rel_heading_envs == 0.0
         assert env.cfg.commands.rel_standing_envs == 0.0
@@ -168,7 +172,8 @@ def main():
         print(
             f"wheel_velocity_limit={env.robot.cfg.actuators['wheel'].velocity_limit} rad/s "
             f"runtime_clamp={env.max_wheel_vel} rad/s "
-            f"training_effort_limit={expected_wheel_effort} N*m"
+            f"wheel_training_effort_limit={expected_wheel_effort} N*m "
+            f"leg_effort_limit=40.0 N*m leg_PD={expected_leg_pd}"
         )
     finally:
         env.close()

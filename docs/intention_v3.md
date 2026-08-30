@@ -42,6 +42,7 @@ base config 的 `[-2, 3]` 和 `randomize_action_delay=False` 为目标。
 | 默认高度命令     |                       `0.22` m | 已确认                                    |
 | 高度命令观测缩放 |                          `1.0` | 已确认；Fudan 此处为`5.0`               |
 | 腿部 PD 初值     |                      Kp=20、Kd=1 | FDU 仿真控制初值；Jump 覆写为 Kp=6、Kd=0.5 |
+| 腿驱动力矩硬上限 |                         `40 N·m` | 四个实体驱动杆统一；随机化不得向上突破     |
 | 动作顺序         | `lf0,l20,l_wheel,rf0,r20,r_wheel` | 用户已确认；当前无部署兼容约束            |
 
 滞空目标高度、收腿/伸腿目标长度仍需 FDU 几何标定，见 §12。除此之外，不允许为了复用现成
@@ -54,7 +55,7 @@ V3/V14 奖励或命令机制而改变 Fudan 语义。
   限位、`r21_Link` 的关节命名和导出为零的 `l20_Link` 惯量，不改 `base_link_del` 的质量/质心/惯量。
 - USD 转换后由 `add_loop_joints.py` 添加四个球铰闭链约束，并将其排除出 reduced-coordinate articulation；
   四个驱动杆仍是实际 articulation DOF，不存在 dummy spring DOF。
-- CPU 标定报告见 [`fdu_calibration_report.json`](./fdu_calibration_report.json)：14 DOF、15 刚体、根质量
+- CPU 标定报告见 [`fdu_calibration_report.json`](./fdu_validation/geometry/fdu_calibration_report.json)：14 DOF、15 刚体、根质量
   11.718 kg、10 步静置状态有限。报告中的 actuator natural order 仅用于审计，策略顺序始终按 §2.1 的
   具名映射。
 - `effort_limit`、PD 和动作缩放是仿真控制假设，不等于真实电机额定参数；真实驱动器的力矩常数、减速比、
@@ -140,9 +141,63 @@ theta0 = atan2(-wheel_from_hip_b[..., 0], -wheel_from_hip_b[..., 2])
 - 左右输出固定为 `[left, right]`。
 - helper 每个仿真步只计算一次，所有 `nominal_state` 和 Jump 奖励复用缓存结果。
 
+几何和机械边界必须区分：指定杆长给出的纯几何上限为
+`0.17472 + 0.208 = 0.38272 m`，但正确保留的被动关节限位
+`lf1=[-0.63, 1.10] rad`、`rf1=[-1.10, 0.63] rad` 把竖直构型机械范围进一步限制为约
+`[0.09495, 0.34149] m`。因此 `0.40 m` 不是当前 `L0` 定义下的可达腿长；录像扫描不应越过
+`0.34 m`，训练还应留出限位裕量。
+
+2026-08-30 的静态保持诊断确认录像中的抖动是真实物理极限环，而非 30 FPS 混叠。根因是闭环用
+`excludeFromArticulation=True` 的外部球铰约束实现，`dt=0.005 s` 时 PhysX 对刚性闭环的离散求解不稳定：
+`L0=0.20/0.285/0.335 m` 的峰峰抖动约为 `16.8/10.2/21.5 mm`。保持相同 PD 和约束、只把步长减半至
+`dt=0.0025 s` 后，`0.285/0.335 m` 的峰峰值降至 `0.00027/0.00042 mm`；`0.17 m` 也稳定。
+`0.162 m` 在 400 Hz 仍会进入极限环，但在 800 Hz 恢复稳定，证明这是步长稳定性阈值而非几何冲突。
+`0.10 m` 边界在 800 Hz 的峰峰抖动约 `0.0011 mm`，因此它在正确限位下能够数值稳定；同一目标在
+400/200 Hz 下分别约为 `12.0/24.5 mm`，低腿长若进入训练范围必须使用 800 Hz。
+进一步折中扫描表明：500 Hz（`dt=0.002 s`）、`16/6` position/velocity iterations 在
+`L0>=0.14 m` 时稳定，能够覆盖 Fudan 常用的 `L_tuck=0.16 m`；`0.12 m` 仍有约 `7.9 mm` 极限环。
+提高到 `32/6` 可使 `0.12 m` 稳定，但 `0.10 m` 仍约 `3.9 mm`，且粗略求解工作量
+`500*32` 已高于 `800*16`，因此不能用堆迭代代替减小时间步。推荐按任务分档：训练下限不低于
+`0.14 m` 使用 500 Hz、`16/6`、`decimation=5`；确需覆盖约 `0.10 m` 时使用 800 Hz、`16/6`、
+`decimation=8`。两档都维持 100 Hz 策略周期。
+500 Hz 的 `16/4` 在 `0.16 m` 稳定、在 `0.14 m` 失稳；虽然更省计算，也消除了“velocity iterations
+大于 4”的 TGS 提示，但动态落地尚未验证，因此正式训练仍保留 `16/6` 的裕量。2026-08-30 重新录制的
+`fdu_validation/video/fdu_l0_phi0_v4.mp4` 使用 400 Hz，在 `0.2001--0.3338 m` 扫描中左右最大误差仅
+`3e-6 m / 2.8e-5 rad`，几何、镜像和缓慢运动闭环通过可视化验收。
+诊断记录按 timestep/solver 分类存放在 `fdu_validation/jitter/`，复现实验用
+`scripts/diagnose_fdu_jitter.py`。
+
+碰撞隔离结论：上述静态诊断和掉落测试均明确使用 `enabled_self_collisions=False`，即 articulation 内全部
+link-link 自碰撞关闭，抖动依然存在，因此连杆 mesh 自碰撞不是静态极限环的根因。FDU USD 是 instanceable，
+尝试从外层关闭所有 `CollisionAPI` 会被 USD 拒绝；该无效运行仅保存在
+`fdu_validation/archive/invalid/`，不得用作 A/B 证据。受控掉落的逐 body 接触记录中，所有腿杆接触峰值均为
+`0 N`，首次冲击只发生在左右轮，亦未发现连杆 collider 误触地面。
+
+闭链锚点需要特别区分“MJCF site 坐标”和“装配后的同一物理销轴”。将原始 MJCF site 变换到指定 URDF
+零位后，左右 loop1 的两点相距 `10.000 mm`；loop2 相距 `10.202 mm`，分量约为横向 `10.000 mm`、
+x 向 `1.944 mm`、z 向 `0.550 mm`。主要原因是前后连杆位于两个横向层面。MuJoCo `<connect>` 是带
+`solref/solimp` 的软点约束，可容许并逐步修正该初始误差；PhysX spherical joint 则要求两个局部锚点表示
+同一个三维点。当前转换保留前杆 site，把后杆锚点投影到装配状态的同一世界点，得到零预载连接。
+这与 v4 平面几何一致，但真实销轴横向位置仍应最终用 CAD 轴心确认。
+
+掉落测试使用 `scripts/test_fdu_drop.py`。相同 `L0=0.285 m`、root z=`0.45 m` 的自由掉落中，200 Hz 的
+最大闭链残差为 `2.42 mm`、末段腿长峰峰抖动约 `15.6 mm`；500 Hz 分别降到 `0.50 mm` 和
+`0.04 mm`，再次证明提高物理频率有效。自由本体随后会倾倒并发生底盘接触，因此另设竖直导向测试隔离
+轴向冲击：500 Hz 时只有轮子接触，最大闭链残差 `0.742 mm`，但四个腿驱动达到当时的 `30 N*m` 上限，最大
+目标误差 `0.786 rad`，最终 `L0` 约 `0.218 m`。因此当前动态瓶颈还包括驱动力矩/位置控制承载能力，
+不能把落地后腿缩短或底盘触地一概归因于闭链或碰撞 mesh。
+相同竖直导向方法测试短腿 `L0=0.16 m`、root z=`0.40 m` 时，也只有轮子接触，闭链最大残差
+`1.37 mm`；驱动同样达到当时的 `30 N*m`，最终 `L0` 约 `0.128 m`。这两组是更改上限前的历史基线，
+不得误写成当前 40 N·m 配置的结果。这说明缩腿落地会进一步放大冲击和
+驱动饱和，后续必须以真实电机力矩/减速比为依据标定 PD 和落地策略，而不是继续提高虚拟位置刚度。
+
 ## 3. 时间和缓冲区契约
 
-物理 `dt=0.005` s，`decimation=2`，策略周期 `step_dt=0.01` s（100 Hz），episode 20 s。
+当前训练仍为物理 `dt=0.005` s、`decimation=2`，策略周期 `step_dt=0.01` s（100 Hz），episode 20 s。
+但闭环静态诊断已证明 200 Hz 会产生持续抖动。若任务只使用当前 `[0.23,0.31] m`，至少改为
+`dt=0.0025 s`、`decimation=4`；若恢复 Fudan `0.16 m` 缩腿，推荐 `dt=0.002 s`、`decimation=5`。
+需要覆盖 `0.10 m` 才使用 `dt=0.00125 s`、`decimation=8`。三者都保持策略周期、reward 积分和命令周期
+为 100 Hz 语义；正式训练前必须选择与目标腿长范围对应的档位。
 
 在一次策略步完成物理推进后，按以下逻辑顺序更新：
 
@@ -504,12 +559,16 @@ base_link_del
 | added base mass               | `[-1, 2]` kg        | `[-2, 3]` kg                     |
 | base COM offset each axis     | `[-0.02, 0.02]` m   | `[-0.05, 0.05]` m                |
 | inertia multiplier            | `[0.9, 1.1]`        | `[0.8, 1.2]`                     |
-| Kp/Kd/motor torque multiplier | `[0.95, 1.05]`      | `[0.9, 1.1]`                     |
+| Kp/Kd multiplier              | `[0.95, 1.05]`      | `[0.9, 1.1]`                     |
+| motor torque multiplier       | `[0.95, 1.0]`       | `[0.9, 1.0]`                     |
 | default joint position offset | `[-0.03, 0.03]` rad | `[-0.05, 0.05]` rad              |
 | push                          | off                   | every 5 s，max XY velocity 1.5 m/s |
 
 随机化样本必须 per-env 保存，既用于实际施加，也用于 critic privilege；不能事后从物理张量均值反推。
 default position、Kp/Kd 和 torque multiplier 只作用于六个驱动关节，并遵循 §2.1 顺序。
+腿部四驱动杆的名义硬上限统一为 `40 N·m`；因此 torque 随机化只允许减弱，Flat/Rough 实际范围为
+`38--40 N·m`，Jump 为 `36--40 N·m`。轮电机仍分别以 §2.1 的 Flat/Rough `5 N·m`、Jump `50 N·m`
+为名义值应用同一弱化倍率。
 
 Fudan terrain material 固定 static/dynamic friction=0.5、restitution=0.5；每环境 robot shapes 直接使用其
 采样标量。Isaac Lab 中显式使用与 PhysX 默认接触材料组合等价的 `average` combine mode，不沿用 V3 当前
@@ -649,13 +708,29 @@ Rough 课程的跨 episode 晋级/降级仍需一次覆盖 reset 的长时运行
    跨 reset 状态；完成 Fudan 行为对齐后，新增独立实验改为“滞空累计、落地奖励后清零”，比较跳跃频率、
    滞空时间、落地稳定性和总回报。修正版必须使用新实验名，不能覆盖兼容基线。
 2. **腿根偏移**：从 USD/仿真读取左右 hip offset，确认 §2.2 的几何原点。不能继续默认 hip x/z=0。
-3. **L0 目标**：Fudan 的 `L_tuck=0.16` m、`L_extend=0.31` m 只可作为临时占位；用 FDU 可达
-   腿长范围标定后设置 WYW config。
+3. **L0 目标**：机械竖直范围约 `[0.09495, 0.34149] m`，但该范围不等于数值稳定训练范围。
+   当前 WYW 的 `[0.23, 0.31] m` 在 400 Hz 静态诊断中稳定；Fudan 的 `L_tuck=0.16 m` 若要恢复，
+   需要 800 Hz 或闭环约束重构。不要把几何/限位可达直接当作训练安全范围。
 4. **滞空高度**：Fudan `H_flight=0.65` m；FDU 当前使用 0.65 m，仍需用 base root z 分布而非视觉估计复核。
 5. **Jump PD**：FDU Jump 使用 Kp=6/Kd=0.5；在固定
    动作下测量可达腿长、峰值力矩、起跳速度和接触稳定性，再决定 Jump 专用 PD。
 6. **动作方向**：左右 front/rear 关节的正方向可能与 Fudan 镜像定义不同。动作顺序已经确定，但仍需
    单关节正动作测试确认 `theta0` 和 `L0` 变化方向；必要时用显式 sign map，不改变网络数组顺序。
 7. **材料组合**：`average` 是基于 PhysX 默认语义的迁移选择，最终以当前 Isaac Sim 版本的物理验证为准。
+8. **Fudan 气弹簧 spatial tendon**：不要等策略长训完成后再加入，也不要立即混入当前无弹簧基线。
+   原始 `mjmodel.xml` 的左右 tendon 分别连接 `lf0_Link` 与 `lf1_Link` 上的 `qitanhuang` site；
+   `mjmodel_lqr.xml` 进一步把 tendon motor 控制范围写为 `0--350 N`。这只说明它是单向拉力执行器，
+   不能单凭该范围反推出被动气弹簧的力—长度曲线、预载、迟滞或伸缩阻尼。推荐顺序为：
+
+   1. 保留 `use_spring=False`，完成 500 Hz、40 N·m、当前 PD 的静态与掉落无弹簧基线；
+   2. 用 MJCF/CAD 安装点建立独立的 spring A/B asset/config，扫描 tendon length 对 `L0/phi0` 的关系；
+   3. 根据实物标定名义力、行程、自由/安装长度、压缩与回弹阻尼，并分别验证静态平衡、跌落回弹、
+      驱动饱和比例和闭链残差；
+   4. 上述单体测试通过后、正式 Flat/Rough/Jump 长训前启用弹簧，并随机化预载/力和阻尼；无弹簧配置
+      始终保留为回归基线。
+
+   气弹簧会改变腿的平衡点、等效刚度、落地冲击和策略最优动作，因此加入后需要重新训练，不能直接沿用
+   无弹簧策略作最终性能结论。实现前仍需实物或设计数据：名义力、有效行程、两端安装长度、力—行程曲线
+   以及压缩/回弹阻尼；若没有这些数据，只能先做 `0--350 N` 常拉力敏感性扫描，不能称为实物标定。
 
 上述标定结果必须写入 configclass、测试 fixture 和一次标定记录，不能只改模块常量或留在训练命令行中。
