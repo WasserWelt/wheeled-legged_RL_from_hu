@@ -583,6 +583,7 @@ class WheelbipeWywFlatEnvCfg_Play(WheelbipeWywFlatEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 50
+        self.height_scanner.debug_vis = False
 
 
 @configclass
@@ -595,6 +596,7 @@ class WheelbipeWywRoughEnvCfg_Play(WheelbipeWywRoughEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 50
+        self.height_scanner.debug_vis = False
 
 
 @configclass
@@ -607,3 +609,4 @@ class WheelbipeWywJumpEnvCfg_Play(WheelbipeWywJumpEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         self.scene.num_envs = 50
+        self.height_scanner.debug_vis = False

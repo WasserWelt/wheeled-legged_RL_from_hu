@@ -258,4 +258,10 @@ class OnPolicySequenceRunner(OnPolicyRunner):
         self.alg.policy.eval()
         if device is not None:
             self.alg.policy.to(device)
-        return self.alg.policy.act_inference
+
+        def inference_policy(obs_dict):
+            obs, obs_history, _ = self.alg._split_obs(obs_dict)
+            actions, _ = self.alg.policy.act_inference(obs, obs_history)
+            return actions
+
+        return inference_policy
