@@ -58,6 +58,8 @@ def main():
         assert env.cfg.wheel_forward_scan_cfg["enabled"] is False
         assert env.cfg.use_obs_delay is False
         assert env.cfg.use_act_delay is False
+        assert not hasattr(env.cfg, "wyw_safe_l0_range")
+        assert not hasattr(env.cfg, "wyw_safe_theta0_abs")
         assert env.cfg.termination_duration_enabled is True
         assert env.cfg.termination_duration_steps == 100
         assert env.cfg.max_wheel_vel == 60.0
@@ -120,6 +122,11 @@ def main():
         assert torch.count_nonzero(obs["critic"][:, 28:40]) == 0
         action_1 = torch.linspace(-0.3, 0.3, 6, device=env.device).repeat(n, 1)
         obs, reward, terminated, truncated, _ = env.step(action_1)
+        expected_leg_targets = (
+            env.robot.data.default_joint_pos[:, env._wyw_leg_joint_idx]
+            + env.leg_action_scale * action_1[:, [0, 1, 3, 4]]
+        )
+        assert torch.allclose(env.leg_actions, expected_leg_targets)
         assert torch.count_nonzero(obs["critic"][:, 28:40]) == 0
         action_2 = -action_1
         obs, reward, terminated, truncated, _ = env.step(action_2)

@@ -45,12 +45,11 @@ base config 的 `[-2, 3]` 和 `randomize_action_delay=False` 为目标。
 | 腿驱动力矩硬上限 |                         `40 N·m` | 四个实体驱动杆统一；随机化不得向上突破     |
 | 动作顺序         | `lf0,l20,l_wheel,rf0,r20,r_wheel` | 用户已确认；当前无部署兼容约束            |
 
-高度命令 `[0.15,0.30] m` 与腿目标安全投影 `[0.23,0.31] m` 是两个独立契约，不得因修改命令范围而
-静默放宽闭链动作空间。现有静态标定显示该腿长投影在平地大致对应 root height `[0.20,0.28] m`，所以
-高度命令两端包含不可完全达到的稳态区间，尤其 `0.15 m` 会持续给策略压腿动机。保留该用户指定范围，
-但新 PPO 验收必须同时查看 `base_height` 分桶回报、实测 root height、腿力矩饱和率和
-`FDU_L0Boundary` 进入次数；若低高度命令显著增加越界，必须在“扩大已标定安全动作空间”和“对奖励目标
-做可达性处理”之间显式选择，不能暗中 clamp observation 里的 command。
+四个腿动作直接按 `q_target=q_default+0.5*action` 发送给实体驱动杆，与 Fudan 的直接关节目标语义一致；
+不再按 `L0/theta0` 做安全投影、裁剪或逆解。解析等效腿状态只供 reward、几何诊断和稳定边界监控使用。
+因此高度命令 `[0.15,0.30] m` 不再被旧 `[0.23,0.31] m` 目标工作区截断，但闭链可达性完全交给物理
+约束、实体关节限位和力矩上限处理。新 PPO 验收必须查看 `base_height` 分桶回报、实测 root height、
+腿力矩饱和率和 `FDU_L0Boundary` 进入次数，且不得暗中 clamp observation 里的 command。
 
 滞空目标高度、收腿/伸腿目标长度仍需 FDU 几何标定，见 §12。除此之外，不允许为了复用现成
 V3/V14 奖励或命令机制而改变 Fudan 语义。
@@ -742,7 +741,8 @@ level += move_up - move_down
 | Rough 500 Hz PPO（height 0.15--0.30） | 64 env、3 iterations、seed 42、headless | 数值通过；9216 steps，无 NaN；L0 边界 19 次、630 env-physics samples、全程最小 0.1108 m，后两轮当前越界为 0 |
 | Jump 500 Hz PPO（height 0.15--0.30） | 64 env、3 iterations、seed 42、headless | **物理验收失败**：虽无 NaN 且 loss/KL 有限，第 3 轮仍有 58/64 env 越界；累计 90 次、36340 samples、最小 0.0944 m |
 | Jump 固定目标隔离 | Play、无 DR，tuck 0.23 m 后伸至 0.29/0.30/0.31 m | **失败**：静置后 root z 仅约 0.068 m，三组均未离地；证明不是 PPO 随机动作导致 |
-| Pure-tensor golden tests | 21 项，Isaac Lab Python/CPU | 通过：mapping、25/141 分段、actor-noisy/critic-clean、历史、Plane/Jump 公式、逐项 clip、DR、contact filter、termination、课程 |
+| Pure-tensor golden tests | 20 项，Isaac Lab Python/CPU | 通过：mapping、25/141 分段、actor-noisy/critic-clean、历史、Plane/Jump 公式、逐项 clip、DR、contact filter、termination、课程 |
+| Flat 直接四杆动作 smoke | 1 env、CPU、500 Hz/16/6、reset + 三次 step | 通过：不经 `L0/theta0` 投影，obs/reward 有限；合成短腿样本触发边界日志 |
 | Flat 自然长程 | 1 env、500 Hz/16/6、零动作、20 s | 通过：第 500 步周期重采样，第 1999 步 timeout；reset history/action 与 L0 episode log 通过 |
 | Rough 自然长程 | 2 env、500 Hz/16/6、零动作、20 s | 通过：第 500 步周期重采样，第 1999 步 timeout；terrain level `[0,5] -> [0,4]` |
 | Jump 自然长程 | 1 env、500 Hz/16/6、零动作、20 s | 语义通过但物理仍失败：第 1999 步 timeout/reset 重采样；无独立第 2000 步重采样；多次进入 L0 边界 |
@@ -752,29 +752,29 @@ level += move_up - move_down
 语义冒烟和 pure-tensor fixture 验证了 100 个 policy step 的姿态持续终止；新增自然长程测试验证了
 20 s timeout、reset 后历史/动作清理、L0 episode 日志、Flat/Rough 5 s 命令周期以及 Rough 跨 episode
 课程降级。Jump 的命令周期也是 20 s，与 episode 长度相同：环境在 policy step 1999 先 timeout/reset，
-由 reset 重新采样，因此不会出现独立的 step-2000 周期重采样。新的 500 Hz 配置已经达到
-Flat/Rough/Jump 的“64 env、3 iterations”数值运行门槛，但 Jump 不能因优化器数值有限就判为通过：
-其长期、广泛进入 `L0<=0.14 m` 边界属于明确物理失败。
+由 reset 重新采样，因此不会出现独立的 step-2000 周期重采样。表中的 64-env PPO 使用已删除的
+`L0/theta0` 投影动作语义，不能继续作为当前直接四杆目标配置的验收证据；三任务都必须重跑 GPU smoke。
+旧 Jump 结果长期、广泛进入 `L0<=0.14 m` 边界，仍是明确的历史物理失败证据。
 
 自然长程脚本为隔离 timeout，把本次测试内的姿态持续窗口临时从生产值 100 步提高到 100000 步，避免
 零动作随机姿态先触发 terminal；报告同时记录生产值和测试覆盖值。生产 100 步持续终止由 golden test
 和环境 smoke fixture 验证，不能用该隔离设置改变正式训练配置。
 
-新高度范围下三次正式验收运行及落盘配置分别位于：
+新高度范围下三次历史验收运行及落盘配置分别位于：
 
 - `logs/rsl_rl/wheelbipe_fdu_wyw_flat_direct/2026-08-30_18-30-56_acceptance_height015_030_500hz_64env_3iter/`
 - `logs/rsl_rl/wheelbipe_fdu_wyw_rough_direct/2026-08-30_18-31-45_acceptance_height015_030_500hz_64env_3iter/`
 - `logs/rsl_rl/wheelbipe_fdu_wyw_jump_direct/2026-08-30_18-32-43_acceptance_height015_030_500hz_64env_3iter/`
 
-三次运行均使用当前正式配置：物理 `500 Hz`、`16/6` solver、`decimation=5`、腿驱动硬上限
-`40 N·m`，高度命令范围 `[0.15,0.30] m`。Flat/Rough 的优化器数值性和 L0 边界日志通过；Jump
-虽然优化器数值性通过，但由于无气弹簧时的静态承载不足，仍不能作为物理验收通过。对应的自然长程
-语义报告位于 `docs/fdu_validation/training/`；旧的 `17-58`--`17-59` 目录保留为高度范围变更前的
-历史对照，不再作为当前主验收证据。
+三次运行使用物理 `500 Hz`、`16/6` solver、`decimation=5`、腿驱动硬上限 `40 N·m` 和高度命令范围
+`[0.15,0.30] m`，但仍包含现已删除的 `[0.23,0.31] m` 动作投影。它们只能证明旧版本 Flat/Rough
+优化器数值有限以及旧 Jump 的无弹簧物理失败，不能证明当前直接四杆动作路径。对应自然长程语义报告
+位于 `docs/fdu_validation/training/`，同样保留为历史对照。
 
 Jump 固定目标报告为 `fdu_validation/jump/fdu_jump_calibration_500hz_40nm.json`。当前证据支持的因果链是：
-Jump 沿用 Fudan `Kp=6,Kd=0.5`，但当前 FDU 配置尚无原版 spatial tendon 气弹簧支撑；即使目标经过
-投影限制在 `L0>=0.23 m`，实际承重腿长仍压到约机械下限。后续必须在以下两条路线中明确选择并单独验收：
+Jump 沿用 Fudan `Kp=6,Kd=0.5`，但当前 FDU 配置尚无原版 spatial tendon 气弹簧支撑；旧版即使将
+目标投影限制在 `L0>=0.23 m`，实际承重腿长仍压到约机械下限。当前已移除该投影，后续必须在以下两条
+路线中明确选择并单独验收：
 加入已标定气弹簧后保留 Jump PD，或把无弹簧 Jump 视为新的本体适配任务并重新标定 PD。不能继续用当前
 Jump 配置长训，也不能用提高求解频率掩盖静态承载不足。
 
@@ -791,9 +791,9 @@ Jump 配置长训，也不能用提高求解频率掩盖静态承载不足。
    滞空时间、落地稳定性和总回报。修正版必须使用新实验名，不能覆盖兼容基线。
 2. **腿根偏移**：从 USD/仿真读取左右 hip offset，确认 §2.2 的几何原点。不能继续默认 hip x/z=0。
 3. **L0 目标**：机械竖直范围约 `[0.09495, 0.34149] m`，但该范围不等于数值稳定训练范围。
-   当前 WYW 的目标投影范围 `[0.23, 0.31] m` 在 500 Hz 下稳定；Fudan 的 `L_tuck=0.16 m` 或冲击
-   承重仍可能使实测腿长进入 `<=0.14 m` 边界，必须查看 §3.1 日志。若越界频繁，优先比较已验证的
-   800 Hz 档或重构闭环约束。不要把几何/限位可达直接当作训练安全范围。
+   当前四驱动杆目标不再投影；Fudan 的 `L_tuck=0.16 m`、直接关节动作或冲击承重都可能使实测腿长
+   进入 `<=0.14 m` 边界，必须查看 §3.1 日志。若越界频繁，优先比较已验证的 800 Hz 档或重构闭环
+   约束。不要把几何/限位可达直接当作训练安全范围。
 4. **滞空高度**：Fudan `H_flight=0.65` m；FDU 当前使用 0.65 m，仍需用 base root z 分布而非视觉估计复核。
 5. **Jump PD**：FDU Jump 使用 Kp=6/Kd=0.5；在固定
    动作下测量可达腿长、峰值力矩、起跳速度和接触稳定性，再决定 Jump 专用 PD。

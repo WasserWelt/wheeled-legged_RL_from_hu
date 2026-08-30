@@ -39,7 +39,6 @@ from . import wyw_constants as C
 from .fdu_mapping import (
     POLICY_JOINT_NAMES,
     compute_fdu_equivalent_leg_state,
-    project_fdu_leg_targets,
     update_buggy_fudan_airtime,
 )
 from .fdu_semantics import (
@@ -122,18 +121,9 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self.wheel_actions = self.wheel_action_scale * self._actions[:, C.WYW_WHEEL_ACTION_IDS]
 
     def _apply_action(self) -> None:
-        desired = self.leg_actions
-        leg_targets = torch.stack(
-            project_fdu_leg_targets(
-                desired[:, 0], desired[:, 1], desired[:, 2], desired[:, 3],
-                min_length=self.cfg.wyw_safe_l0_range[0],
-                max_length=self.cfg.wyw_safe_l0_range[1],
-                max_abs_theta=self.cfg.wyw_safe_theta0_abs,
-            ),
-            dim=-1,
-        )
         wheel_targets = torch.clamp(self.wheel_actions, -self.max_wheel_vel, self.max_wheel_vel)
-        self.robot.set_joint_position_target(leg_targets, joint_ids=self._wyw_leg_joint_idx)
+        # Match Fudan's direct joint-target semantics; L0/theta0 remain diagnostics only.
+        self.robot.set_joint_position_target(self.leg_actions, joint_ids=self._wyw_leg_joint_idx)
         self.robot.set_joint_velocity_target(wheel_targets, joint_ids=self._wyw_wheel_joint_idx)
         self._update_obs()
         # The simulator refreshes body poses after _apply_action. From the

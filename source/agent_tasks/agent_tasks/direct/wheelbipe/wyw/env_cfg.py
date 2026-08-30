@@ -487,13 +487,6 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     wyw_joint_acc_scale = 0.0025    # critic 专用
     wyw_torque_scale = 0.05         # critic 专用
     tracking_sigma = 0.25
-    # Closed-chain calibration started at 30 N*m; the production hard ceiling
-    # is now 40 N*m and must be revalidated before expanding this workspace.
-    # The old 30 N*m drop tests showed that 0.20--0.22 m could stall above the
-    # target. Keep all commanded pairs on the measured assembly branch and
-    # away from the singular extremes until the 40 N*m A/B is complete.
-    wyw_safe_l0_range = (0.23, 0.31)
-    wyw_safe_theta0_abs = 0.40
     # This is a diagnostic boundary, not an action clamp or termination.
     # The 500 Hz / 16/6 scans showed persistent loop limit cycles below it.
     wyw_l0_stability_monitor_enabled = True

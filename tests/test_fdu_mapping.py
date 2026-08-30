@@ -15,7 +15,6 @@ compute_fudan_virtual_leg_state = _MODULE.compute_fudan_virtual_leg_state
 compute_fdu_equivalent_leg_state = _MODULE.compute_fdu_equivalent_leg_state
 equivalent_kite_jacobian = _MODULE.equivalent_kite_jacobian
 inverse_equivalent_kite = _MODULE.inverse_equivalent_kite
-project_fdu_leg_targets = _MODULE.project_fdu_leg_targets
 solve_equivalent_kite = _MODULE.solve_equivalent_kite
 map_virtual_leg_torque = _MODULE.map_virtual_leg_torque
 update_buggy_fudan_airtime = _MODULE.update_buggy_fudan_airtime
@@ -103,21 +102,6 @@ def test_inverse_respects_passive_joint_limits_not_only_triangle_inequality():
     _, _, valid = inverse_equivalent_kite(lengths, torch.zeros_like(lengths))
     assert valid.tolist() == [False, True, True, False, False]
     assert _MODULE.FDU_MECHANICAL_L0_MAX == pytest.approx(0.3414853, abs=1.0e-6)
-
-
-def test_entity_targets_are_projected_into_calibrated_equivalent_workspace():
-    raw = torch.tensor([-2.5, 0.0, 2.5])
-    lf0, l20, rf0, r20 = project_fdu_leg_targets(
-        raw, -raw, raw, -raw,
-        min_length=0.23,
-        max_length=0.31,
-        max_abs_theta=0.40,
-    )
-    ll, lt, rl, rt = compute_fdu_equivalent_leg_state(lf0, l20, rf0, r20)
-    assert torch.all((ll >= 0.23 - 1.0e-6) & (ll <= 0.31 + 1.0e-6))
-    assert torch.all((rl >= 0.23 - 1.0e-6) & (rl <= 0.31 + 1.0e-6))
-    assert torch.all(torch.abs(lt) <= 0.40 + 1.0e-6)
-    assert torch.all(torch.abs(rt) <= 0.40 + 1.0e-6)
 
 
 def test_buggy_airtime_accumulates_on_ground_and_clears_in_flight():

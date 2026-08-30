@@ -137,44 +137,6 @@ def inverse_equivalent_kite(
     return front_joint, rear_joint, valid
 
 
-def project_fdu_leg_targets(
-    lf0: torch.Tensor,
-    l20: torch.Tensor,
-    rf0: torch.Tensor,
-    r20: torch.Tensor,
-    *,
-    min_length: float,
-    max_length: float,
-    max_abs_theta: float,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Project four entity-bar targets into the calibrated kite workspace.
-
-    The policy still controls the four physical motors.  Projection is done in
-    the one-to-one equivalent coordinates because independent scalar joint
-    clamps cannot describe a closed-chain workspace: first clamp ``L0`` and
-    ``theta0``, then inverse-map to the same assembly branch.  Right-side
-    entity signs are restored after solving in the common left-leg frame.
-    """
-    if not 0.0 < min_length <= max_length:
-        raise ValueError(f"invalid FDU length range [{min_length}, {max_length}]")
-    if max_abs_theta <= 0.0:
-        raise ValueError(f"max_abs_theta must be positive, got {max_abs_theta}")
-    left_l0, left_theta, right_l0, right_theta = compute_fdu_equivalent_leg_state(
-        lf0, l20, rf0, r20
-    )
-    left_l0 = torch.clamp(left_l0, min=min_length, max=max_length)
-    right_l0 = torch.clamp(right_l0, min=min_length, max=max_length)
-    left_theta = torch.clamp(left_theta, min=-max_abs_theta, max=max_abs_theta)
-    right_theta = torch.clamp(right_theta, min=-max_abs_theta, max=max_abs_theta)
-    left_front, left_rear, left_valid = inverse_equivalent_kite(left_l0, left_theta)
-    right_front_common, right_rear_common, right_valid = inverse_equivalent_kite(
-        right_l0, right_theta
-    )
-    if not bool(torch.all(left_valid & right_valid)):
-        raise RuntimeError("calibrated FDU workspace produced an invalid inverse solution")
-    return left_front, left_rear, -right_front_common, -right_rear_common
-
-
 def compute_fdu_equivalent_leg_state(
     lf0: torch.Tensor,
     l20: torch.Tensor,
