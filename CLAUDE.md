@@ -27,6 +27,13 @@ python scripts/rsl_rl/play.py  --task=<task> --num_envs=1 --checkpoint=<model.pt
 
 There is no test suite, linter, or build step. "Running" means launching a task in sim via the scripts above.
 
+For the `gpu_isaac` server workflow, use
+`scripts/cloud/fdu_flat_train_pipeline.sh`. It starts detached Flat training,
+waits for completion, runs a headless Play acceptance recording, preserves the
+MP4 path, and requests shutdown only after a non-empty video is verified. The
+full setup, reattach commands, artifact names, and `--no-shutdown` debugging
+mode are documented in `docs/cloud_gpu_isaac_workflow.md`.
+
 - `train.py --checkpoint=X` **without** `--resume_training` = finetune: loads only shape-matching policy tensors (2D input layers are zero-padded when the model is wider), resets iteration to 0. See `_load_policy_for_finetune` in `scripts/rsl_rl/train.py`.
 - `train.py --checkpoint=X --resume_training` = true resume: restores optimizer + iteration counter.
 - Logs/checkpoints/exports go to `logs/rsl_rl/<experiment_name>/<timestamp>/`. Velocity-trace CSV/HTML go to `logs/debug/`.
