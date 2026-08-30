@@ -7,45 +7,45 @@
 
 ## 任务注册
 
-| Task ID | 环境配置 | 地形 | 奖励实现 |
-| --- | --- | --- | --- |
-| `Robotics-Wheelbipe-FDU-wyw-Flat-v1` | `WheelbipeWywFlatEnvCfg` | flat USD | Fudan Plane |
-| `Robotics-Wheelbipe-FDU-wyw-Flat-Play-v1` | `WheelbipeWywFlatEnvCfg_Play` | flat USD | Fudan Plane |
-| `Robotics-Wheelbipe-FDU-wyw-Rough-v1` | `WheelbipeWywRoughEnvCfg` | FDU trimesh generator | Fudan Plane |
+| Task ID                                      | 环境配置                         | 地形                  | 奖励实现    |
+| -------------------------------------------- | -------------------------------- | --------------------- | ----------- |
+| `Robotics-Wheelbipe-FDU-wyw-Flat-v1`       | `WheelbipeWywFlatEnvCfg`       | flat USD              | Fudan Plane |
+| `Robotics-Wheelbipe-FDU-wyw-Flat-Play-v1`  | `WheelbipeWywFlatEnvCfg_Play`  | flat USD              | Fudan Plane |
+| `Robotics-Wheelbipe-FDU-wyw-Rough-v1`      | `WheelbipeWywRoughEnvCfg`      | FDU trimesh generator | Fudan Plane |
 | `Robotics-Wheelbipe-FDU-wyw-Rough-Play-v1` | `WheelbipeWywRoughEnvCfg_Play` | FDU trimesh generator | Fudan Plane |
-| `Robotics-Wheelbipe-FDU-wyw-Jump-v1` | `WheelbipeWywJumpEnvCfg` | flat USD | Fudan Jump |
-| `Robotics-Wheelbipe-FDU-wyw-Jump-Play-v1` | `WheelbipeWywJumpEnvCfg_Play` | flat USD | Fudan Jump |
+| `Robotics-Wheelbipe-FDU-wyw-Jump-v1`       | `WheelbipeWywJumpEnvCfg`       | flat USD              | Fudan Jump  |
+| `Robotics-Wheelbipe-FDU-wyw-Jump-Play-v1`  | `WheelbipeWywJumpEnvCfg_Play`  | flat USD              | Fudan Jump  |
 
 Flat、Rough、Jump 都禁用 V3/V14 状态机、special spin/dash 命令和气弹簧；Jump 的跳跃行为由
 Fudan reward 和接触/腾空计算产生。
 
 ## 本体与闭链
 
-| 项 | 当前值 |
-| --- | --- |
-| 权威模型 | `robot_models/fdu_infantry_V4_mujoco/meshes/infantry_V2.urdf` 转换的 `Wheelbipe_FDU_CFG` |
-| 根体 | `base_link_del`；14 DOF、15 rigid bodies |
-| 闭链实现 | USD 中 4 个 spherical loop constraint，标记 `physics:excludeFromArticulation`，由 PhysX 约束求解器闭合 |
-| 自碰撞 | `enabled_self_collisions=False`（生产配置和已接受跌落测试均关闭） |
-| 几何常量 | `L1=0.17472 m`、`L2=0.208 m`；使用 `fdu_mapping.py` 的解析筝形求解器 |
-| 被动机械范围 | `L0≈[0.09495, 0.34149] m`；仅三角形几何上限为 `0.38272 m` |
-| 训练投影工作区 | `L0=[0.23, 0.31] m`、`|theta0|<=0.40 rad`；这是动作投影范围，不是 URDF 机械限位 |
-| 驱动杆 | `lf0 + l20`、`rf0 + r20` 四个实体关节，策略直接控制 |
-| 关节顺序 | `lf0_Joint, l20_Joint, l_wheel_Joint, rf0_Joint, r20_Joint, r_wheel_Joint` |
+| 项             | 当前值                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------- |
+| 权威模型       | `robot_models/fdu_infantry_V4_mujoco/meshes/infantry_V2.urdf` 转换的 `Wheelbipe_FDU_CFG`            |
+| 根体           | `base_link_del`；14 DOF、15 rigid bodies                                                              |
+| 闭链实现       | USD 中 4 个 spherical loop constraint，标记`physics:excludeFromArticulation`，由 PhysX 约束求解器闭合 |
+| 自碰撞         | `enabled_self_collisions=False`（生产配置和已接受跌落测试均关闭）                                     |
+| 几何常量       | `L1=0.17472 m`、`L2=0.208 m`；使用 `fdu_mapping.py` 的解析筝形求解器                              |
+| 被动机械范围   | `L0≈[0.09495, 0.34149] m`；仅三角形几何上限为 `0.38272 m`                                          |
+| 动作工作区保护 | 无；不按`L0/theta0` 投影或裁剪                                                                        |
+| 驱动杆         | `lf0 + l20`、`rf0 + r20` 四个实体关节，策略直接控制                                                 |
+| 关节顺序       | `lf0_Joint, l20_Joint, l_wheel_Joint, rf0_Joint, r20_Joint, r_wheel_Joint`                            |
 
-策略动作先按 `q_target = q_default + 0.5 * action` 得到四个驱动杆目标，再计算等效
-`(L0, theta0)`、投影到训练工作区、逆解回同一闭链装配分支。轮动作是速度目标
-`10 * action`。因此策略仍输出 6 维物理执行器目标，并不是输出两个虚拟关节。
+四个腿动作直接按 `q_target = q_default + 0.5 * action` 发送给实体驱动杆，不再计算
+`(L0, theta0)` 后投影或逆解。`L0/theta0` 只用于 reward、几何诊断和稳定边界日志。轮动作是
+速度目标 `10 * action`。策略输出仍为 6 维：四个实体驱动杆位置目标和两个轮速度目标。
 
 ## 执行器与限制
 
-| 执行器 | Kp | Kd | effort limit | velocity limit |
-| --- | ---: | ---: | ---: | ---: |
-| 四个驱动杆（Flat/Rough） | 20 | 1 | 40 N m | 30 rad/s |
-| 四个驱动杆（Jump） | 6 | 0.5 | 40 N m | 30 rad/s |
-| 被动闭链关节 | 0 | 0.01 | 50 N m | 300 rad/s |
-| 轮（Flat/Rough） | 0 | 0.2 | 5 N m | 60 rad/s |
-| 轮（Jump） | 0 | 0.2 | 50 N m | 60 rad/s |
+| 执行器                   | Kp |   Kd | effort limit | velocity limit |
+| ------------------------ | -: | ---: | -----------: | -------------: |
+| 四个驱动杆（Flat/Rough） | 20 |    1 |       40 N m |       30 rad/s |
+| 四个驱动杆（Jump）       |  6 |  0.5 |       40 N m |       30 rad/s |
+| 被动闭链关节             |  0 | 0.01 |       50 N m |      300 rad/s |
+| 轮（Flat/Rough）         |  0 |  0.2 |        5 N m |       60 rad/s |
+| 轮（Jump）               |  0 |  0.2 |       50 N m |       60 rad/s |
 
 轮速度目标缩放为 `10`，运行时 clamp 和 PhysX `velocity_limit_sim` 都是 `60 rad/s`。
 这是当前速度目标 adapter 的安全边界；Fudan 原始控制器本身采用轮 torque 控制，不应把
@@ -54,29 +54,29 @@ Fudan reward 和接触/腾空计算产生。
 
 ## 时间、环境和求解器
 
-| 项 | 当前值 |
-| --- | ---: |
-| physics `dt` | `0.002 s`（500 Hz） |
-| decimation | `5` |
-| policy 频率 | `100 Hz` |
-| solver position / velocity iterations | `16 / 6` |
-| episode length | `20 s`（2000 policy steps） |
-| 训练环境数 | `4096` |
-| Play 默认环境数 | `50`（CLI 可以覆盖） |
-| self-collision | 关闭 |
-| 气弹簧/tendon | `use_spring=False`，尚未加入 |
+| 项                                    |                         当前值 |
+| ------------------------------------- | -----------------------------: |
+| physics`dt`                         |          `0.002 s`（500 Hz） |
+| decimation                            |                          `5` |
+| policy 频率                           |                     `100 Hz` |
+| solver position / velocity iterations |                     `16 / 6` |
+| episode length                        |  `20 s`（2000 policy steps） |
+| 训练环境数                            |                       `4096` |
+| Play 默认环境数                       |         `50`（CLI 可以覆盖） |
+| self-collision                        |                           关闭 |
+| 气弹簧/tendon                         | `use_spring=False`，尚未加入 |
 
 ## 命令与 reset
 
-| 项 | Flat/Rough | Jump |
-| --- | --- | --- |
-| `vx` | `[-2.0, 2.0] m/s` | `[-2.1, 2.1] m/s` |
-| `vy` | `[0, 0] m/s` | `[0, 0] m/s` |
-| yaw rate | `[-2.0, 2.0] rad/s` | `[-2.0, 2.0] rad/s` |
-| 高度命令 | `[0.15, 0.30] m` | `[0.15, 0.30] m` |
-| resampling period | `5 s` | `20 s` |
-| heading command | `False`（直接采样 yaw rate） | `False`（直接采样 yaw rate） |
-| `rel_heading_envs` / `rel_standing_envs` | `0 / 0` | `0 / 0` |
+| 项                                           | Flat/Rough                     | Jump                           |
+| -------------------------------------------- | ------------------------------ | ------------------------------ |
+| `vx`                                       | `[-2.0, 2.0] m/s`            | `[-2.1, 2.1] m/s`            |
+| `vy`                                       | `[0, 0] m/s`                 | `[0, 0] m/s`                 |
+| yaw rate                                     | `[-2.0, 2.0] rad/s`          | `[-2.0, 2.0] rad/s`          |
+| 高度命令                                     | `[0.15, 0.30] m`             | `[0.15, 0.30] m`             |
+| resampling period                            | `5 s`                        | `20 s`                       |
+| heading command                              | `False`（直接采样 yaw rate） | `False`（直接采样 yaw rate） |
+| `rel_heading_envs` / `rel_standing_envs` | `0 / 0`                      | `0 / 0`                      |
 
 所有任务 reset 时线速度、角速度各轴均在 `[-0.5,0.5]` 随机化。Rough 额外将 reset
 XY 位置随机化到 `[-1,1] m`。Jump 每 5 s 施加一次 XY 速度 push，范围 `[-1.5,1.5] m/s`。
@@ -84,13 +84,13 @@ Play 关闭 startup 随机化、push 和观测噪声，只保留 reset event；�
 
 ## 观测契约
 
-| 张量 | 维度 | 段顺序 |
-| --- | ---: | --- |
-| policy | 25 | `ang_vel(3), projected_gravity(3), command(vx,yaw,height)(3), leg_pos_dev(4), dof_vel(6), action(6)` |
-| policy history | 125 | 最近 `5 x 25` 帧，reset 后用当前帧填满 |
-| critic | 141 | `base_lin_vel(3), clean_policy(25), a[t-1](6), a[t-2](6), dof_acc(6), scan(77), torque(6), DR(12)` |
-| encoder latent | 3 | 由历史 policy 观测估计隐式 base linear velocity |
-| action | 6 | 四驱动杆位置目标 + 左右轮速度目标 |
+| 张量           | 维度 | 段顺序                                                                                                 |
+| -------------- | ---: | ------------------------------------------------------------------------------------------------------ |
+| policy         |   25 | `ang_vel(3), projected_gravity(3), command(vx,yaw,height)(3), leg_pos_dev(4), dof_vel(6), action(6)` |
+| policy history |  125 | 最近`5 x 25` 帧，reset 后用当前帧填满                                                                |
+| critic         |  141 | `base_lin_vel(3), clean_policy(25), a[t-1](6), a[t-2](6), dof_acc(6), scan(77), torque(6), DR(12)`   |
+| encoder latent |    3 | 由历史 policy 观测估计隐式 base linear velocity                                                        |
+| action         |    6 | 四驱动杆位置目标 + 左右轮速度目标                                                                      |
 
 观测缩放：`ang_vel=0.25`、`dof_vel=0.05`、Flat/Rough `lin_vel=2`、Jump `lin_vel=3`、
 yaw command `0.25`、height command `1`、gravity `1`、joint position `1`、critic joint
@@ -103,16 +103,16 @@ acceleration `0.0025`、critic torque `0.05`、height scan `5`。action 段不�
 
 Flat/Rough 的权重（raw term 乘 weight 乘 `step_dt=0.01` 后，再按单项裁剪）如下：
 
-| term | weight | term | weight |
-| --- | ---: | --- | ---: |
-| `tracking_lin_vel` | 1 | `tracking_lin_vel_enhance` | 1 |
-| `tracking_ang_vel` | 1 | `tracking_ang_vel_enhance` | 1 |
-| `base_height` | 1 | `nominal_state` | -1 |
-| `lin_vel_z` | -1 | `ang_vel_xy` | -0.2 |
-| `orientation` | -100 | `dof_vel` | -5e-5 |
-| `dof_acc` | -2.5e-7 | `torques` | -1e-4 |
-| `action_rate` | -0.01 | `action_smooth` | -0.01 |
-| `collision` | -1 | `dof_pos_limits` | -1 |
+| term                 |  weight | term                         | weight |
+| -------------------- | ------: | ---------------------------- | -----: |
+| `tracking_lin_vel` |       1 | `tracking_lin_vel_enhance` |      1 |
+| `tracking_ang_vel` |       1 | `tracking_ang_vel_enhance` |      1 |
+| `base_height`      |       1 | `nominal_state`            |     -1 |
+| `lin_vel_z`        |      -1 | `ang_vel_xy`               |   -0.2 |
+| `orientation`      |    -100 | `dof_vel`                  |  -5e-5 |
+| `dof_acc`          | -2.5e-7 | `torques`                  |  -1e-4 |
+| `action_rate`      |   -0.01 | `action_smooth`            |  -0.01 |
+| `collision`        |      -1 | `dof_pos_limits`           |     -1 |
 
 Jump 的权重：`tracking_lin_vel=1`、`tracking_lin_vel_enhance=1`、`tracking_ang_vel=1`、
 `flight=0.15`、`encourage_jump=1`、`base_height_flight=6`、`leg_tuck=1.7`、
@@ -148,16 +148,16 @@ Plane 的 collision raw term 因没有被惩罚接触 link 通常为零；Jump �
 
 ## 域随机化
 
-| 项 | Flat/Rough | Jump |
-| --- | --- | --- |
-| base mass addition | `[-1,2] kg` | `[-2,3] kg` |
-| 每刚体 mass/inertia scale | `[0.9,1.1]` | `[0.8,1.2]` |
-| base COM xyz | `±0.02 m` | `±0.05 m` |
-| robot friction | `[0.6,1.4]` | `[0.1,2.0]` |
-| robot restitution | `[0.6,1.0]` | `[0.5,1.0]` |
-| default policy-joint offset | `±0.03 rad` | `±0.05 rad` |
-| Kp/Kd scale | `[0.95,1.05]` | `[0.9,1.1]` |
-| effort output scale | `[0.95,1.0]` | `[0.9,1.0]` |
+| 项                          | Flat/Rough      | Jump           |
+| --------------------------- | --------------- | -------------- |
+| base mass addition          | `[-1,2] kg`   | `[-2,3] kg`  |
+| 每刚体 mass/inertia scale   | `[0.9,1.1]`   | `[0.8,1.2]`  |
+| base COM xyz                | `±0.02 m`    | `±0.05 m`   |
+| robot friction              | `[0.6,1.4]`   | `[0.1,2.0]`  |
+| robot restitution           | `[0.6,1.0]`   | `[0.5,1.0]`  |
+| default policy-joint offset | `±0.03 rad`  | `±0.05 rad` |
+| Kp/Kd scale                 | `[0.95,1.05]` | `[0.9,1.1]`  |
+| effort output scale         | `[0.95,1.0]`  | `[0.9,1.0]`  |
 
 每个环境独立采样并把 base mass deviation、COM、default joint delta、friction、restitution
 写入 critic 的 12 维 privilege。仿真/地面材质 friction/restitution 默认均为 `0.5/0.5`，
@@ -180,23 +180,24 @@ reset 时若距 terrain origin 超过 terrain length 的四分之一（`2 m`）�
 
 Flat/Rough/Jump 共享 `WheelbipeWywPPORunnerCfg`（仅 experiment name 不同）：
 
-| 项 | 值 |
-| --- | --- |
-| runner / policy / algorithm | `OnPolicySequenceRunner` / `ActorCriticSequence` / `PPOSequence` |
-| rollout | `48` steps/env |
-| source runner `max_iterations` | `20000` |
-| save interval | `500` |
-| actor / critic / encoder | `[128,64,32]` / `[256,128,64]` / `[128,64]` |
-| latent / activation / init std | `3` / ELU / `0.5` |
-| orthogonal init | `False` |
-| value coef / clipped value / clip param | `1` / `True` / `.2` |
-| entropy / epochs / minibatches | `.01` / `5` / `4` |
-| policy LR / encoder LR | `1e-3` / `1e-3` |
-| schedule / gamma / lambda | adaptive / `.99` / `.95` |
-| desired KL / max grad norm | `.005` / `1` |
+| 项                                      | 值                                                                     |
+| --------------------------------------- | ---------------------------------------------------------------------- |
+| runner / policy / algorithm             | `OnPolicySequenceRunner` / `ActorCriticSequence` / `PPOSequence` |
+| rollout                                 | `48` steps/env                                                       |
+| source runner`max_iterations`         | `20000`                                                              |
+| save interval                           | `500`                                                                |
+| actor / critic / encoder                | `[128,64,32]` / `[256,128,64]` / `[128,64]`                      |
+| latent / activation / init std          | `3` / ELU / `0.5`                                                  |
+| orthogonal init                         | `False`                                                              |
+| value coef / clipped value / clip param | `1` / `True` / `.2`                                              |
+| entropy / epochs / minibatches          | `.01` / `5` / `4`                                                |
+| policy LR / encoder LR                  | `1e-3` / `1e-3`                                                    |
+| schedule / gamma / lambda               | adaptive /`.99` / `.95`                                            |
+| desired KL / max grad norm              | `.005` / `1`                                                       |
 
 本次云端 Flat 训练使用 launch CLI 将 `max_iterations` 覆盖为 `5000`，环境数 `4096`、seed
-`42`；这不是源码 runner 默认值。训练结束后的 Play 验收应使用保存的 checkpoint，并保留视频。
+`42`；这不是源码 runner 默认值。该任务在移除动作投影前启动，checkpoint 属于旧动作语义，不能作为
+当前直接四杆目标配置的续训或 Play 验收基线。
 
 ## Play 与验证状态
 
@@ -204,11 +205,12 @@ Play 配置默认 50 envs、无观测噪声和 startup DR；`scripts/rsl_rl/play
 `--max_steps`、`--video` 覆盖。可视化/视频脚本输出应放在 `docs/fdu_validation/video/`。
 
 已接受的几何报告为 [`geometry/fdu_calibration_report.json`](./fdu_validation/geometry/fdu_calibration_report.json)，
-验证索引见 [`fdu_validation/README.md`](./fdu_validation/README.md)。其中包括 500 Hz / 16/6
-求解器的长时 reset/command smoke 和 64-env、3-iteration GPU smoke（seed 42）。Flat/Rough
-通过数值与 L0 边界门槛；Jump 在未加入气弹簧时仍是已知物理失败：最终 smoke iteration 有
-58/64 个环境进入 L0 稳定边界。短腿跌落视频和报告保留在 `fdu_validation/video/` 与 `drop/`，
-800 Hz A/B 仅作诊断，不改变当前生产配置。
+验证索引见 [`fdu_validation/README.md`](./fdu_validation/README.md)。当前直接动作路径已通过 1-env、CPU、
+500 Hz Flat reset/step smoke，pure-tensor mapping/reward tests 为 20 passed。已有长时 reset/command 和
+64-env、3-iteration GPU smoke 均使用旧投影动作语义，只能作为历史对照；Flat/Rough/Jump 必须重新执行
+GPU smoke 后才能恢复验收状态。旧 Jump 运行在未加入气弹簧时仍是物理失败，最终 iteration 有 58/64
+个环境进入 L0 稳定边界。短腿跌落视频和报告保留在 `fdu_validation/video/` 与 `drop/`，800 Hz A/B
+仅作诊断，不改变当前生产配置。
 
 ## 已知限制
 
