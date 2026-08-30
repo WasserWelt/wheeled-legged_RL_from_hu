@@ -48,7 +48,9 @@ def main():
     env = WheelbipeWywEnv(cfg)
     try:
         n = env.num_envs
-        assert env.cfg.decimation == 2
+        assert env.cfg.sim.dt == 0.002
+        assert env.cfg.decimation == 5
+        assert env.cfg.sim.render_interval == 5
         assert env.step_dt == 0.01
         assert env.cfg.episode_length_s == 20.0
         assert env.cfg.enable_state_machines is False
@@ -68,6 +70,10 @@ def main():
         expected_leg_pd = (6.0, 0.5) if args_cli.variant == "jump" else (20.0, 1.0)
         assert env.robot.cfg.actuators["legs_act"].stiffness == expected_leg_pd[0]
         assert env.robot.cfg.actuators["legs_act"].damping == expected_leg_pd[1]
+        assert env.robot.cfg.spawn.articulation_props.solver_position_iteration_count == 16
+        assert env.robot.cfg.spawn.articulation_props.solver_velocity_iteration_count == 6
+        assert env.cfg.wyw_l0_stability_monitor_enabled is True
+        assert env.cfg.wyw_l0_stability_boundary_m == 0.14
         assert env.cfg.commands.heading_command is False
         assert env.cfg.commands.rel_heading_envs == 0.0
         assert env.cfg.commands.rel_standing_envs == 0.0
@@ -155,6 +161,19 @@ def main():
             counter_attr="_wyw_orientation_termination_counter",
             raw_attr="_wyw_orientation_termination_raw_buf",
         ))
+
+        # The calibrated-boundary monitor must retain a substep event, expose
+        # it in runner/TensorBoard logs, and avoid turning it into a reset.
+        synthetic_l0 = torch.full((n, 2), 0.20, device=env.device)
+        synthetic_l0[0, 0] = 0.13
+        previous_entry_count = int(env._wyw_l0_boundary_total_entries.item())
+        env._update_wyw_l0_stability_monitor(synthetic_l0)
+        env._flush_wyw_l0_stability_monitor()
+        assert int(env._wyw_l0_boundary_total_entries.item()) == previous_entry_count + 1
+        assert int(env._wyw_l0_boundary_episode_samples[0].item()) >= 1
+        assert env._wyw_l0_global_min_m <= 0.13
+        assert "Diagnostics/FDU_L0Boundary/total_entry_events" in env.extras["log"]
+        assert "Diagnostics/FDU_L0Boundary/total_physics_samples" in env.extras["log"]
 
         episode_length_saved = env.episode_length_buf.clone()
         env.episode_length_buf.fill_(env.max_episode_length - 1)

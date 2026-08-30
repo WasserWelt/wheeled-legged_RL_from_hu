@@ -16,7 +16,7 @@
   ``observation_space`` / ``state_space`` 设为 **int**（25 / 141，**不是 dict**——传 dict 会被
   stock ``DirectRLEnv._configure_gym_env_spaces`` 整体嵌进 ``["policy"]`` 丢掉 policy_hist 键），
   环境侧 ``_get_observations`` 再覆写实际返回张量（policy/policy_hist/critic 三键）。
-- decimation=2 → 100Hz 策略。
+- 物理 500Hz（dt=0.002）、decimation=5 → 100Hz 策略；闭链求解固定 16/6 iterations。
 - 命令范围收敛到 fudan：vx±2.1、yaw±2.0，关闭 spin/dash 特殊模式。
 - Flat/Rough/Jump 使用各自严格的 Fudan reward term 集合，不混入 V3/V14 shaping。
 """
@@ -179,8 +179,15 @@ def randomize_fdu_default_joint_pos(
 # ---------------------------------------------------------------------------- #
 def _apply_wyw_common(cfg) -> None:
     """在 super().__post_init__() 之后，强制 fudan 的 obs 形状 / 命令 / 100Hz。"""
-    # 100Hz 策略
-    cfg.decimation = 2
+    # FDU maximal-coordinate loop constraints need 500 Hz at the accepted
+    # training workspace. Keep the Fudan policy period at 100 Hz.
+    cfg.sim = copy.deepcopy(cfg.sim)
+    cfg.sim.dt = 0.002
+    cfg.decimation = 5
+    cfg.sim.render_interval = cfg.decimation
+    cfg.robot_cfg = copy.deepcopy(cfg.robot_cfg)
+    cfg.robot_cfg.spawn.articulation_props.solver_position_iteration_count = 16
+    cfg.robot_cfg.spawn.articulation_props.solver_velocity_iteration_count = 6
     cfg.sim.physics_material = copy.deepcopy(cfg.sim.physics_material)
     cfg.sim.physics_material.friction_combine_mode = "average"
     cfg.sim.physics_material.restitution_combine_mode = "average"
@@ -487,6 +494,13 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     # away from the singular extremes until the 40 N*m A/B is complete.
     wyw_safe_l0_range = (0.23, 0.31)
     wyw_safe_theta0_abs = 0.40
+    # This is a diagnostic boundary, not an action clamp or termination.
+    # The 500 Hz / 16/6 scans showed persistent loop limit cycles below it.
+    wyw_l0_stability_monitor_enabled = True
+    wyw_l0_stability_boundary_m = 0.14
+    wyw_l0_stability_check_interval_steps = 10
+    wyw_l0_stability_warning_interval_steps = 1000
+    wyw_l0_stability_log_max_env_ids = 16
     wyw_l0_tuck = 0.23
     wyw_l0_extend = 0.31
     wyw_base_height_flight = 0.65
