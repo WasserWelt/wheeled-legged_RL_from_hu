@@ -1,0 +1,47 @@
+{
+  "tuck_length_m": 0.23,
+  "policy_dt_s": 0.01,
+  "settle_steps": 150,
+  "extend_steps": 40,
+  "flight_steps": 180,
+  "jump_leg_pd": {
+    "stiffness": 6.0,
+    "damping": 0.5,
+    "effort_limit": 40.0
+  },
+  "samples": [
+    {
+      "extend_length_m": 0.29,
+      "start_root_z_m": 0.06873810291290283,
+      "minimum_root_z_m": 0.06121806800365448,
+      "peak_root_z_m": 0.10392694920301437,
+      "height_gain_m": 0.03518884629011154,
+      "peak_vertical_velocity_m_s": 0.14499856531620026,
+      "airborne_steps": 0,
+      "first_takeoff_step": -1,
+      "first_landing_step": -1
+    },
+    {
+      "extend_length_m": 0.3,
+      "start_root_z_m": 0.06824398040771484,
+      "minimum_root_z_m": 0.060927197337150574,
+      "peak_root_z_m": 0.11228857934474945,
+      "height_gain_m": 0.04404459893703461,
+      "peak_vertical_velocity_m_s": 0.16895563900470734,
+      "airborne_steps": 0,
+      "first_takeoff_step": -1,
+      "first_landing_step": -1
+    },
+    {
+      "extend_length_m": 0.31,
+      "start_root_z_m": 0.06790504604578018,
+      "minimum_root_z_m": 0.06046033650636673,
+      "peak_root_z_m": 0.12224522978067398,
+      "height_gain_m": 0.0543401837348938,
+      "peak_vertical_velocity_m_s": 0.1913377046585083,
+      "airborne_steps": 0,
+      "first_takeoff_step": -1,
+      "first_landing_step": -1
+    }
+  ]
+}

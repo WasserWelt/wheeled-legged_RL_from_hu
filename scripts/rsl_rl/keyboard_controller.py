@@ -86,7 +86,8 @@ class Se3KeyboardMobile(DeviceBase):
         self._height_delta = 0.0  # 高度增量
         self._current_height = 0.0  # 当前高度值（累积值）
         self._default_height = 0.0  # 默认高度值
-        self._height_range = [0.15, 0.55]  # 高度范围限制
+        # WYW/FDU command contract; play.py may still replace this from env_cfg.
+        self._height_range = [0.15, 0.30]  # 高度范围限制
 
         # 按键状态跟踪（用于非增量式控制）
         self._pressed_keys = set()

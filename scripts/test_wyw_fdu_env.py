@@ -79,6 +79,8 @@ def main():
         assert env.cfg.commands.rel_standing_envs == 0.0
         assert tuple(env.cfg.commands.ranges.lin_vel_y) == (0.0, 0.0)
         assert tuple(env.cfg.commands.ranges.ang_vel_z) == (-2.0, 2.0)
+        assert tuple(env.cfg.height_range) == (0.15, 0.30)
+        assert tuple(cfg.height_range) == (0.15, 0.30)
         if args_cli.variant == "rough":
             terrain_cfg = env.cfg.terrain.terrain_generator
             assert terrain_cfg.curriculum is True
@@ -94,6 +96,7 @@ def main():
         expected_command_period = (20.0, 20.0) if args_cli.variant == "jump" else (5.0, 5.0)
         assert tuple(env.cfg.commands.resampling_time_range) == expected_command_period
         obs, _ = env.reset()
+        assert torch.all(env.height_cmd >= 0.15) and torch.all(env.height_cmd <= 0.30)
         assert obs["policy"].shape == (n, 25)
         assert obs["policy_hist"].shape == (n, 125)
         assert obs["critic"].shape == (n, 141)
@@ -180,19 +183,20 @@ def main():
         _, time_out = env._get_dones()
         assert torch.all(time_out)
         env.episode_length_buf.copy_(episode_length_saved)
-        print("WYW FDU ENV SMOKE TEST PASSED")
-        print(f"variant={args_cli.variant} play={args_cli.play} reward_terms={list(env.cfg.rewards)}")
-        print(f"policy_order={env._wyw_policy_joint_idx}")
-        print(f"leg_entity_indices={env._wyw_leg_joint_idx}")
-        print(f"wheel_entity_indices={env._wyw_wheel_joint_idx}")
-        print(f"obs_dims=policy:25 policy_hist:125 critic:141")
-        print(f"reward_terms={list(env.cfg.rewards)} clip_per_term={reward_bound}")
-        print("termination=projected_gravity_z>-0.1 for 100 consecutive policy steps; timeout=20 s")
+        print("WYW FDU ENV SMOKE TEST PASSED", flush=True)
+        print(f"variant={args_cli.variant} play={args_cli.play} reward_terms={list(env.cfg.rewards)}", flush=True)
+        print(f"policy_order={env._wyw_policy_joint_idx}", flush=True)
+        print(f"leg_entity_indices={env._wyw_leg_joint_idx}", flush=True)
+        print(f"wheel_entity_indices={env._wyw_wheel_joint_idx}", flush=True)
+        print(f"obs_dims=policy:25 policy_hist:125 critic:141", flush=True)
+        print(f"reward_terms={list(env.cfg.rewards)} clip_per_term={reward_bound}", flush=True)
+        print("termination=projected_gravity_z>-0.1 for 100 consecutive policy steps; timeout=20 s", flush=True)
         print(
             f"wheel_velocity_limit={env.robot.cfg.actuators['wheel'].velocity_limit} rad/s "
             f"runtime_clamp={env.max_wheel_vel} rad/s "
             f"wheel_training_effort_limit={expected_wheel_effort} N*m "
-            f"leg_effort_limit=40.0 N*m leg_PD={expected_leg_pd}"
+            f"leg_effort_limit=40.0 N*m leg_PD={expected_leg_pd}",
+            flush=True,
         )
     finally:
         env.close()

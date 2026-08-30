@@ -1,0 +1,49 @@
+{
+  "command_counter_initial": [
+    1,
+    1
+  ],
+  "command_resampled_by_episode_reset": true,
+  "decimation": 5,
+  "episode_l0_log_keys_present": true,
+  "expected_command_period_s": 5.0,
+  "final_command_ranges_x": [
+    [
+      -2.0,
+      2.0
+    ],
+    [
+      -2.0,
+      2.0
+    ]
+  ],
+  "final_terrain_levels": [
+    0,
+    4
+  ],
+  "first_periodic_command_resample_step": 500,
+  "height_command_range_m": [
+    0.15,
+    0.3
+  ],
+  "initial_terrain_levels": [
+    0,
+    5
+  ],
+  "max_episode_length_steps": 2000,
+  "num_envs": 2,
+  "physics_dt_s": 0.002,
+  "policy_dt_s": 0.01,
+  "production_termination_duration_steps": 100,
+  "reset_action_history_zero": true,
+  "reset_history_refilled": true,
+  "rough_curriculum_changed": true,
+  "solver_iterations": [
+    16,
+    6
+  ],
+  "termination_duration_steps_under_test": 100000,
+  "timeout_step": 1999,
+  "unexpected_terminations": 0,
+  "variant": "rough"
+}

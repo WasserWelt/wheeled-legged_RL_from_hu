@@ -254,10 +254,10 @@ def _apply_wyw_common(cfg) -> None:
         ranges.lin_vel_y = (0.0, 0.0)
         ranges.ang_vel_z = (-2.0, 2.0)
 
-    # 高度命令区间锁死为当前 FDU 任务配置（rough helper 可能改写，故这里强制回来）
-    # Static grounded scan maps the safe L0 interval [0.23, 0.31] m to an
-    # attainable root height of roughly [0.20, 0.28] m on the 0.06 m wheels.
-    cfg.height_range = [0.20, 0.28]
+    # 高度命令区间锁死为当前 FDU 任务配置（rough helper 可能改写，故这里强制回来）。
+    # This is a task command/reward range; physical entity targets remain
+    # independently projected into the calibrated L0/theta0 workspace.
+    cfg.height_range = [0.15, 0.30]
     if cfg.terrain.terrain_type == "plane":
         cfg.terrain.terrain_type = "usd"
         cfg.terrain.usd_path = f"{AssetPath}/usd_files/flat_ground.usda"

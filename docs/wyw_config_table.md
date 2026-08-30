@@ -1,6 +1,6 @@
 # WYW FDU 当前配置核对表
 
-> 更新时间：2026-08-28。本表记录当前实装；目标语义和已知风险以
+> 更新时间：2026-08-30。本表记录当前实装；目标语义和已知风险以
 > [`intention_v3.md`](./intention_v3.md) 为准。
 
 ## 任务注册
@@ -23,7 +23,7 @@
 - 四个实体驱动杆使用位置目标：`default + 0.5 * action`。
 - 两个车轮使用速度目标：`10.0 * action`，WYW adapter 上限为 `60 rad/s`；FDU asset 的 `velocity_limit`、`velocity_limit_sim`、WYW 的 `max_wheel_vel` 和运行时 clamp 均保持一致。Fudan 原训练与闭链 MuJoCo sim2sim 都没有 wheel target speed clamp，而是以 `vel_ref=10*action` 形成速度误差，再通过阻尼增益产生并裁剪轮力矩。这里的 `60 rad/s` 是当前 velocity-target adapter 的有意边界：轮半径约 0.06 m，训练最大前进命令 2.1 m/s 对应 35 rad/s，最大偏航命令 2 rad/s、半轮距约 0.1877 m 对单轮再贡献约 6.3 rad/s，极端组合约 41.3 rad/s，60 rad/s 留有约 45% 裕量。它不是原始 Isaac Gym URDF 的 `1500`，也不是由 `clip_actions=100` 推算。
 - Flat/Rough 腿 PD：Kp=20、Kd=1；Jump：Kp=6、Kd=0.5。
-- 四个腿驱动杆 effort limit 为 30 N m；轮毂按 Fudan **训练** URDF 标定为 Flat/Rough 5 N m、Jump
+- 四个腿驱动杆 effort limit 为 40 N m；轮毂按 Fudan **训练** URDF 标定为 Flat/Rough 5 N m、Jump
   50 N m。闭链 sim2sim 的常规 5 N m 与真实部署 Jump 的 4 N m 属于训练后的执行保护，不写入训练配置。
   被动闭链关节 Kp=0、Kd=0.01。
 
@@ -33,8 +33,8 @@
 
 | 项 | 值 |
 | --- | ---: |
-| physics dt | 0.005 s |
-| decimation | 2 |
+| physics dt | 0.002 s |
+| decimation | 5 |
 | policy rate | 100 Hz |
 | action | 6 |
 | actor observation | 25 |
@@ -97,6 +97,6 @@ startup 随机化和 push，只保留 reset pose event。
 - 旧版 Flat/Rough/Jump CPU 单环境曾通过 reset + 两次 step；本次 command/reset/Rough curriculum 修正后
   必须以新的验收报告为准，不能沿用这条作为通过证明。
 - Rough 的左右轮扫描器已重绑定到 `r_wheel_Link` / `l_wheel_Link`。
-- pure-tensor mapping/air-time tests：4 passed。
+- pure-tensor mapping/air-time/reward tests：21 passed。
 
 详细质量、惯量和 joint limit 快照见 [`fdu_calibration_report.json`](./fdu_calibration_report.json)。

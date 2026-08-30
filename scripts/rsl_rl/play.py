@@ -378,7 +378,7 @@ def main():
             
             controller.set_default_height(initial_height)
             controller.set_current_height(initial_height)
-            controller.set_height_range([0.15, 0.55])  # 高度范围限制
+            controller.set_height_range(getattr(env_cfg, "height_range", [0.15, 0.30]))
             print(f"[INFO] 初始高度命令: {initial_height:.3f} (从环境读取: {current_env_height:.3f}, 配置默认: {default_height:.3f})")
         else:
             print("[WARNING] 环境没有height_cmd属性，无法设置高度控制")

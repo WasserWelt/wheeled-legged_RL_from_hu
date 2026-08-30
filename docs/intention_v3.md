@@ -38,12 +38,19 @@ base config 的 `[-2, 3]` 和 `randomize_action_delay=False` 为目标。
 | 项               |                         wyw 目标 | 原因                                      |
 | ---------------- | -------------------------------: | ----------------------------------------- |
 | 机器人           |          `Wheelbipe_FDU_CFG` | 指定 `infantry_V2.urdf` 的闭链并联本体      |
-| 高度命令范围     |               `[0.20, 0.42]` m | FDU 几何量纲                              |
+| 高度命令范围     |               `[0.15, 0.30]` m | 用户确认的 FDU 训练命令范围                |
 | 默认高度命令     |                       `0.22` m | 已确认                                    |
 | 高度命令观测缩放 |                          `1.0` | 已确认；Fudan 此处为`5.0`               |
 | 腿部 PD 初值     |                      Kp=20、Kd=1 | FDU 仿真控制初值；Jump 覆写为 Kp=6、Kd=0.5 |
 | 腿驱动力矩硬上限 |                         `40 N·m` | 四个实体驱动杆统一；随机化不得向上突破     |
 | 动作顺序         | `lf0,l20,l_wheel,rf0,r20,r_wheel` | 用户已确认；当前无部署兼容约束            |
+
+高度命令 `[0.15,0.30] m` 与腿目标安全投影 `[0.23,0.31] m` 是两个独立契约，不得因修改命令范围而
+静默放宽闭链动作空间。现有静态标定显示该腿长投影在平地大致对应 root height `[0.20,0.28] m`，所以
+高度命令两端包含不可完全达到的稳态区间，尤其 `0.15 m` 会持续给策略压腿动机。保留该用户指定范围，
+但新 PPO 验收必须同时查看 `base_height` 分桶回报、实测 root height、腿力矩饱和率和
+`FDU_L0Boundary` 进入次数；若低高度命令显著增加越界，必须在“扩大已标定安全动作空间”和“对奖励目标
+做可达性处理”之间显式选择，不能暗中 clamp observation 里的 command。
 
 滞空目标高度、收腿/伸腿目标长度仍需 FDU 几何标定，见 §12。除此之外，不允许为了复用现成
 V3/V14 奖励或命令机制而改变 Fudan 语义。
@@ -337,9 +344,9 @@ lin_vel_y = [0, 0]
 
 | 任务  | vx                            | yaw rate    | height           |         重采样 | command curriculum |
 | ----- | ----------------------------- | ----------- | ---------------- | -------------: | ------------------ |
-| Flat  | `[-2.0, 2.0]`               | `[-2, 2]` | `[0.20, 0.42]` |   `(5, 5)` s | 平地上关闭实际更新 |
-| Rough | 由 Fudan 课程在上限内逐步扩展 | `[-2, 2]` | `[0.20, 0.42]` |   `(5, 5)` s | 开                 |
-| Jump  | `[-2.1, 2.1]`               | `[-2, 2]` | `[0.20, 0.42]` | `(20, 20)` s | 关                 |
+| Flat  | `[-2.0, 2.0]`               | `[-2, 2]` | `[0.15, 0.30]` |   `(5, 5)` s | 平地上关闭实际更新 |
+| Rough | 由 Fudan 课程在上限内逐步扩展 | `[-2, 2]` | `[0.15, 0.30]` |   `(5, 5)` s | 开                 |
+| Jump  | `[-2.1, 2.1]`               | `[-2, 2]` | `[0.15, 0.30]` | `(20, 20)` s | 关                 |
 
 偏航角速度直接均匀采样，不经过 heading error 控制器。Isaac Lab command term 若不能同时表达上述契约，
 写 WYW 自有 command term，不通过继承 `SpecialModeUniformVelocityCommand` 后再尝试关闭多数分支。
@@ -671,7 +678,8 @@ level += move_up - move_down
 - `env_cfg.py`：WYW base/Flat/Rough/Jump/Play configclass 和所有可序列化字段。
 - `joint_map.py`：唯一具名关节/body 解析及断言；若代码量很小可并入 `env.py`。
 - `rough_cfg.py`：具名 terrain generator 配置和性能课程 helper。
-- `rewards.py`：无环境副作用的 pure-tensor 公式；Jump 状态更新仍由 env 控制。
+- `fdu_semantics.py`：无 Isaac Lab 依赖的 pure-tensor observation/reward/history/课程公式；
+  Jump 的环境状态持有仍由 env 控制。
 - `wyw_constants.py`：只保留维度和不可配置的字段布局，不保存机器人选择或任务参数。
 - `__init__.py`：六个 Gym 注册项和各任务 runner config。
 
@@ -714,12 +722,12 @@ level += move_up - move_down
 5. Reset/termination：通过人工设置状态验证 1 秒倾倒宽限、20 秒 timeout 和 Rough boundary timeout。
 6. 冒烟目标：Flat、Rough、Jump 各 64 env、至少 3 iterations，无 NaN/shape error；这一步不能替代 golden tests。
 7. YAML 审计：确认无 heading/standing/special mode、无 obs/action delay、奖励集合和 clip 值准确，
-   `height_range=[0.20,0.42]`、`height_cmd_scale=1.0`。
+   `height_range=[0.15,0.30]`、`height_cmd_scale=1.0`。
 
 验收不是“可以训练”或“曲线有上升”，而是上述张量、公式、时序和配置测试全部通过。之后才进入性能
 调参；性能调参产生的有意偏离必须以新配置版本记录，不回改迁移基线。
 
-### 11.3 当前验收记录（2026-08-28）
+### 11.3 当前验收记录（2026-08-28 至 2026-08-30）
 
 | 项目 | 实际运行 | 结果 |
 | --- | --- | --- |
@@ -730,11 +738,45 @@ level += move_up - move_down
 | Rough PPO | 16 env、2 iterations、seed 42、非无头 | 通过：课程地形生成、网络维度、loss/KL 有限 |
 | Jump 语义冒烟 | 2 env、headless、seed 42、宿主 GPU | 通过：Jump reward、50 N m 轮力矩、20 s 命令周期 |
 | Jump PPO | 16 env、2 iterations、seed 42、非无头 | 通过：GPU/Vulkan、encoder/actor/critic、loss/KL 有限 |
+| Flat 500 Hz PPO（height 0.15--0.30） | 64 env、3 iterations、seed 42、headless | 数值通过；9216 steps，无 NaN；L0 边界 14 次、464 env-physics samples、全程最小 0.1090 m，后两轮当前越界为 0 |
+| Rough 500 Hz PPO（height 0.15--0.30） | 64 env、3 iterations、seed 42、headless | 数值通过；9216 steps，无 NaN；L0 边界 19 次、630 env-physics samples、全程最小 0.1108 m，后两轮当前越界为 0 |
+| Jump 500 Hz PPO（height 0.15--0.30） | 64 env、3 iterations、seed 42、headless | **物理验收失败**：虽无 NaN 且 loss/KL 有限，第 3 轮仍有 58/64 env 越界；累计 90 次、36340 samples、最小 0.0944 m |
+| Jump 固定目标隔离 | Play、无 DR，tuck 0.23 m 后伸至 0.29/0.30/0.31 m | **失败**：静置后 root z 仅约 0.068 m，三组均未离地；证明不是 PPO 随机动作导致 |
+| Pure-tensor golden tests | 21 项，Isaac Lab Python/CPU | 通过：mapping、25/141 分段、actor-noisy/critic-clean、历史、Plane/Jump 公式、逐项 clip、DR、contact filter、termination、课程 |
+| Flat 自然长程 | 1 env、500 Hz/16/6、零动作、20 s | 通过：第 500 步周期重采样，第 1999 步 timeout；reset history/action 与 L0 episode log 通过 |
+| Rough 自然长程 | 2 env、500 Hz/16/6、零动作、20 s | 通过：第 500 步周期重采样，第 1999 步 timeout；terrain level `[0,5] -> [0,4]` |
+| Jump 自然长程 | 1 env、500 Hz/16/6、零动作、20 s | 语义通过但物理仍失败：第 1999 步 timeout/reset 重采样；无独立第 2000 步重采样；多次进入 L0 边界 |
 
-上述 PPO 运行均未出现 NaN/Inf 或崩溃；2 iterations 约覆盖 0.96 s，因而日志中的
+早期 16-env PPO 运行均未出现 NaN/Inf 或崩溃；2 iterations 约覆盖 0.96 s，因而日志中的
 `terminate=0/time_out=0` 不能证明 1 s 姿态持续终止或 20 s timeout 已在自然 rollout 中触发。
-语义冒烟通过人工 fixture 单独验证了 100 个 policy step 的姿态持续终止和 timeout 边界。
-Rough 课程的跨 episode 晋级/降级仍需一次覆盖 reset 的长时运行；目标门槛“64 env、3 iterations”也尚未执行。
+语义冒烟和 pure-tensor fixture 验证了 100 个 policy step 的姿态持续终止；新增自然长程测试验证了
+20 s timeout、reset 后历史/动作清理、L0 episode 日志、Flat/Rough 5 s 命令周期以及 Rough 跨 episode
+课程降级。Jump 的命令周期也是 20 s，与 episode 长度相同：环境在 policy step 1999 先 timeout/reset，
+由 reset 重新采样，因此不会出现独立的 step-2000 周期重采样。新的 500 Hz 配置已经达到
+Flat/Rough/Jump 的“64 env、3 iterations”数值运行门槛，但 Jump 不能因优化器数值有限就判为通过：
+其长期、广泛进入 `L0<=0.14 m` 边界属于明确物理失败。
+
+自然长程脚本为隔离 timeout，把本次测试内的姿态持续窗口临时从生产值 100 步提高到 100000 步，避免
+零动作随机姿态先触发 terminal；报告同时记录生产值和测试覆盖值。生产 100 步持续终止由 golden test
+和环境 smoke fixture 验证，不能用该隔离设置改变正式训练配置。
+
+新高度范围下三次正式验收运行及落盘配置分别位于：
+
+- `logs/rsl_rl/wheelbipe_fdu_wyw_flat_direct/2026-08-30_18-30-56_acceptance_height015_030_500hz_64env_3iter/`
+- `logs/rsl_rl/wheelbipe_fdu_wyw_rough_direct/2026-08-30_18-31-45_acceptance_height015_030_500hz_64env_3iter/`
+- `logs/rsl_rl/wheelbipe_fdu_wyw_jump_direct/2026-08-30_18-32-43_acceptance_height015_030_500hz_64env_3iter/`
+
+三次运行均使用当前正式配置：物理 `500 Hz`、`16/6` solver、`decimation=5`、腿驱动硬上限
+`40 N·m`，高度命令范围 `[0.15,0.30] m`。Flat/Rough 的优化器数值性和 L0 边界日志通过；Jump
+虽然优化器数值性通过，但由于无气弹簧时的静态承载不足，仍不能作为物理验收通过。对应的自然长程
+语义报告位于 `docs/fdu_validation/training/`；旧的 `17-58`--`17-59` 目录保留为高度范围变更前的
+历史对照，不再作为当前主验收证据。
+
+Jump 固定目标报告为 `fdu_validation/jump/fdu_jump_calibration_500hz_40nm.json`。当前证据支持的因果链是：
+Jump 沿用 Fudan `Kp=6,Kd=0.5`，但当前 FDU 配置尚无原版 spatial tendon 气弹簧支撑；即使目标经过
+投影限制在 `L0>=0.23 m`，实际承重腿长仍压到约机械下限。后续必须在以下两条路线中明确选择并单独验收：
+加入已标定气弹簧后保留 Jump PD，或把无弹簧 Jump 视为新的本体适配任务并重新标定 PD。不能继续用当前
+Jump 配置长训，也不能用提高求解频率掩盖静态承载不足。
 
 运行环境说明：本代理沙箱没有 CUDA 设备，Jump headless 在沙箱内会报 `No CUDA GPUs are available`；
 同一命令在宿主 RTX 3070、`DISPLAY=:1`/CUDA 访问下已通过。PCIe 链宽、IOMMU、TGS velocity iterations、

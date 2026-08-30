@@ -42,6 +42,18 @@ from .fdu_mapping import (
     project_fdu_leg_targets,
     update_buggy_fudan_airtime,
 )
+from .fdu_semantics import (
+    aggregate_fdu_rewards,
+    build_fdu_critic_observation,
+    build_fdu_dr_privilege,
+    build_fdu_policy_observation,
+    compute_fdu_jump_reward_terms,
+    compute_fdu_plane_reward_terms,
+    compute_fdu_rough_curriculum_transition,
+    filter_fdu_wheel_contacts,
+    sample_uniform_command_from_ranges,
+    update_fdu_observation_history,
+)
 
 
 class WheelbipeWywEnv(Wheelbipe25V3Env):
@@ -256,18 +268,18 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             policy_vel = policy_vel.clone()
             policy_vel[:, C.WYW_LEG_ACTION_IDS] = leg_vel
             policy_vel[:, C.WYW_WHEEL_ACTION_IDS] = wheel_vel
-        obs = torch.cat(
-            [
-                ang_vel * self.cfg.wyw_ang_vel_scale,                         # 3
-                gravity * self.cfg.wyw_proj_gravity_scale,                    # 3
-                cmd,                                                         # 3
-                policy_pos[:, C.WYW_LEG_ACTION_IDS] * self.cfg.wyw_joint_pos_scale,  # 4
-                policy_vel * self.cfg.wyw_dof_vel_scale,                     # 6
-                self._actions,                                               # 6 (原始动作，fudan obs 不缩放)
-            ],
-            dim=-1,
+        return build_fdu_policy_observation(
+            base_ang_vel=ang_vel,
+            projected_gravity=gravity,
+            command_block=cmd,
+            leg_pos_deviation=policy_pos[:, C.WYW_LEG_ACTION_IDS],
+            policy_joint_vel=policy_vel,
+            actions=self._actions,
+            ang_vel_scale=self.cfg.wyw_ang_vel_scale,
+            projected_gravity_scale=self.cfg.wyw_proj_gravity_scale,
+            joint_pos_scale=self.cfg.wyw_joint_pos_scale,
+            dof_vel_scale=self.cfg.wyw_dof_vel_scale,
         )
-        return torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _build_wyw_priv_dr_obs(self) -> torch.Tensor:
         """fudan critic 尾部的域随机化特权块（12 维，未做 obs 缩放，与 fudan 一致）。
@@ -307,11 +319,13 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             friction = torch.zeros(n, 1, dtype=torch.float, device=self.device)
             restitution = torch.zeros(n, 1, dtype=torch.float, device=self.device)
 
-        dr = torch.cat(
-            [base_mass_dev, base_com, default_dof_delta, friction, restitution],  # 1+3+6+1+1=12
-            dim=-1,
+        return build_fdu_dr_privilege(
+            centered_base_mass=base_mass_dev,
+            base_com_offset=base_com,
+            default_dof_delta=default_dof_delta,
+            friction=friction,
+            restitution=restitution,
         )
-        return torch.nan_to_num(dr, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _build_wyw_critic_obs(
         self,
@@ -333,20 +347,16 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         before_previous_actions = (
             self._before_previous_actions if before_previous_actions is None else before_previous_actions
         )
-        critic = torch.cat(
-            [
-                base_lin_vel,                                                # 3
-                policy_obs,                                                  # 25 (= fudan obs_buf)
-                previous_actions,                                            # 6  (a_{t-1}，不缩放)
-                before_previous_actions,                                     # 6  (a_{t-2}，不缩放)
-                joint_acc * self.cfg.wyw_joint_acc_scale,                    # 6
-                heights,                                                     # 77
-                torque * self.cfg.wyw_torque_scale,                          # 6
-                self._build_wyw_priv_dr_obs(),                               # 12
-            ],
-            dim=-1,
+        return build_fdu_critic_observation(
+            scaled_base_lin_vel=base_lin_vel,
+            clean_policy_observation=policy_obs,
+            previous_actions=previous_actions,
+            before_previous_actions=before_previous_actions,
+            scaled_joint_acc=joint_acc * self.cfg.wyw_joint_acc_scale,
+            height_scan=heights,
+            scaled_torque=torque * self.cfg.wyw_torque_scale,
+            dr_privilege=self._build_wyw_priv_dr_obs(),
         )
-        return torch.nan_to_num(critic, nan=0.0, posinf=0.0, neginf=0.0)
 
     def _get_fdu_height_scan_obs(self) -> torch.Tensor:
         """Return Fudan's clip(root_z - 0.5 - terrain_z) * height_scale scan."""
@@ -381,12 +391,9 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         clean_policy = self._build_wyw_policy_obs(noisy=False)
         policy = self._build_wyw_policy_obs(noisy=True)
         # 滚动历史：index 0 最旧、-1 最新（与基类 Sim2Sim 约定一致）
-        self._wyw_obs_hist = torch.roll(self._wyw_obs_hist, shifts=-1, dims=1)
-        self._wyw_obs_hist[:, -1] = policy
-        if self._wyw_history_needs_fill.any():
-            fill_ids = self._wyw_history_needs_fill.nonzero(as_tuple=False).flatten()
-            self._wyw_obs_hist[fill_ids] = policy[fill_ids].unsqueeze(1)
-            self._wyw_history_needs_fill[fill_ids] = False
+        self._wyw_obs_hist, self._wyw_history_needs_fill = update_fdu_observation_history(
+            self._wyw_obs_hist, policy, self._wyw_history_needs_fill
+        )
         policy_hist = self._wyw_obs_hist.reshape(self.num_envs, -1)
 
         observations["policy"] = policy
@@ -544,57 +551,36 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
 
     def _compute_wyw_jump_terms(self, leg_lengths: torch.Tensor) -> dict[str, torch.Tensor]:
         """fudan 涌现式跳跃奖励项（均为 per-step 速率，后续统一 ×step_dt）。"""
-        zeros = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-
-        l0_left = leg_lengths[:, 0]
-        l0_right = leg_lengths[:, 1]
-
         # Fudan check_jump: current world-z force OR previous policy frame.
         net_forces = self.contact_sensor.data.net_forces_w
         if net_forces is not None and len(self._desired_contact_link_idx) == 2:
             contact_now = (
                 net_forces[:, self._desired_contact_link_idx, 2] > self.cfg.wyw_flight_contact_force
             )
-            contact_filt = contact_now | self._wyw_last_wheel_contacts
-            self._wyw_last_wheel_contacts.copy_(contact_now)
-            in_flight = torch.all(~contact_filt, dim=1)
-            any_contact = torch.any(contact_filt, dim=1)
+            in_flight, any_contact, next_contacts = filter_fdu_wheel_contacts(
+                contact_now, self._wyw_last_wheel_contacts
+            )
+            self._wyw_last_wheel_contacts.copy_(next_contacts)
         else:
             in_flight = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
             any_contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        in_flight_f = in_flight.float()
-
         root_z = self.robot.data.root_pos_w[:, 2]
         vz = self.robot.data.root_lin_vel_w[:, 2]
-
-        # 滞空期望机身高度
-        base_height_flight = torch.exp(
-            -torch.abs(root_z - self.cfg.wyw_base_height_flight) * 6.0
-        ) * in_flight_f
-        # 滞空收腿
-        leg_tuck = torch.exp(
-            -(torch.abs(l0_left - self.cfg.wyw_l0_tuck) + torch.abs(l0_right - self.cfg.wyw_l0_tuck)) * 4.0
-        ) * in_flight_f
-        # 触地蹬伸（有轮触地且正在向上加速）
-        takeoff_mask = (any_contact & (vz > self.cfg.wyw_takeoff_vz)).float()
-        takeoff_extend = torch.exp(
-            -(torch.abs(l0_left - self.cfg.wyw_l0_extend) + torch.abs(l0_right - self.cfg.wyw_l0_extend)) * 4.0
-        ) * takeoff_mask
-        # 滞空正竖直速度 / 平坦滞空奖励 / 高度加权滞空
-        line_z = torch.clamp(vz, min=0.0) * in_flight_f
-        flight = in_flight_f
-        encourage_jump, self._wyw_base_air_time = update_buggy_fudan_airtime(
-            self._wyw_base_air_time, in_flight, root_z, vz, self.step_dt
+        terms, self._wyw_base_air_time = compute_fdu_jump_reward_terms(
+            leg_lengths=leg_lengths,
+            in_flight=in_flight,
+            any_contact=any_contact,
+            root_z=root_z,
+            root_vz=vz,
+            base_air_time=self._wyw_base_air_time,
+            step_dt=self.step_dt,
+            l0_tuck=self.cfg.wyw_l0_tuck,
+            l0_extend=self.cfg.wyw_l0_extend,
+            base_height_flight=self.cfg.wyw_base_height_flight,
+            takeoff_vz=self.cfg.wyw_takeoff_vz,
+            airtime_update=update_buggy_fudan_airtime,
         )
-
-        return {
-            "base_height_flight": base_height_flight,
-            "leg_tuck": leg_tuck,
-            "takeoff_extend": takeoff_extend,
-            "line_z": line_z,
-            "flight": flight,
-            "encourage_jump": encourage_jump,
-        }
+        return terms
 
     def _compute_fdu_reward_terms(self) -> dict[str, torch.Tensor]:
         """Compute the named Fudan reward terms without V3 shaping gates."""
@@ -607,22 +593,12 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         left_len, right_len = leg_lengths[:, 0], leg_lengths[:, 1]
         left_theta, right_theta = leg_angles[:, 0], leg_angles[:, 1]
 
-        sigma = max(float(getattr(self.cfg, "tracking_sigma", 0.25)), 1.0e-6)
-        lin_err = torch.square(self.command[:, 0] - self.robot.data.root_lin_vel_b[:, 0])
-        ang_err = torch.square(self.command[:, 2] - self.robot.data.root_ang_vel_b[:, 2])
-        lin_scale = 2.0 if bool(getattr(self.cfg, "wyw_jump_enabled", False)) else 1.0
-        lin_track = torch.exp(-lin_err / sigma) * lin_scale
-        lin_enhance = (torch.exp(-lin_err / (10.0 * sigma)) - 1.0) * lin_scale
-
         observed_height = self._get_fdu_base_height()
         height_cmd = self._get_observation_height_cmd()
-        height = torch.exp(-torch.square(observed_height - height_cmd) / 0.001)
 
         qdot = self.robot.data.joint_vel[:, self._actuate_idx]
         qddot = self.robot.data.joint_acc[:, self._actuate_idx]
         tau = self.robot.data.applied_torque[:, self._actuate_idx]
-        action_delta = self._actions - self._previous_actions
-        action_second = self._actions - 2.0 * self._previous_actions + self._before_previous_actions
 
         hard_limits = self.robot.data.joint_pos_limits[:, self._wyw_leg_joint_idx]
         centers = 0.5 * (hard_limits[..., 0] + hard_limits[..., 1])
@@ -630,11 +606,6 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         soft_lower = centers - 0.97 * half_ranges
         soft_upper = centers + 0.97 * half_ranges
         positions = self.robot.data.joint_pos[:, self._wyw_leg_joint_idx]
-        pos_limit_penalty = torch.sum(
-            torch.clamp(soft_lower - positions, min=0.0)
-            + torch.clamp(positions - soft_upper, min=0.0),
-            dim=-1,
-        )
 
         contact_forces = getattr(self.contact_sensor.data, "net_forces_w", None)
         if contact_forces is None or not self._undesired_contact_link_idx:
@@ -643,24 +614,31 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             selected = contact_forces[:, self._undesired_contact_link_idx]
             collision = (torch.linalg.vector_norm(selected, dim=-1) > 0.1).float().sum(dim=-1)
 
-        terms = {
-            "tracking_lin_vel": lin_track,
-            "tracking_lin_vel_enhance": lin_enhance,
-            "tracking_ang_vel": torch.exp(-ang_err / sigma),
-            "tracking_ang_vel_enhance": torch.exp(-ang_err / (10.0 * sigma)) - 1.0,
-            "base_height": height,
-            "nominal_state": torch.square(left_theta - right_theta),
-            "lin_vel_z": torch.square(self.robot.data.root_lin_vel_b[:, 2]),
-            "ang_vel_xy": torch.square(self.robot.data.root_ang_vel_b[:, :2]).sum(dim=-1),
-            "orientation": torch.square(self.robot.data.projected_gravity_b[:, :2]).sum(dim=-1),
-            "dof_vel": torch.square(qdot[:, C.WYW_LEG_ACTION_IDS]).sum(dim=-1),
-            "dof_acc": torch.square(qddot).sum(dim=-1),
-            "torques": torch.square(tau).sum(dim=-1),
-            "action_rate": torch.square(action_delta).sum(dim=-1),
-            "action_smooth": torch.square(action_second[:, C.WYW_LEG_ACTION_IDS]).sum(dim=-1),
-            "collision": collision,
-            "dof_pos_limits": pos_limit_penalty,
-        }
+        terms = compute_fdu_plane_reward_terms(
+            command_vx=self.command[:, 0],
+            command_yaw=self.command[:, 2],
+            base_lin_vel=self.robot.data.root_lin_vel_b,
+            base_ang_vel=self.robot.data.root_ang_vel_b,
+            projected_gravity=self.robot.data.projected_gravity_b,
+            observed_height=observed_height,
+            height_command=height_cmd,
+            left_l0=left_len,
+            right_l0=right_len,
+            left_theta=left_theta,
+            right_theta=right_theta,
+            joint_vel=qdot,
+            joint_acc=qddot,
+            applied_torque=tau,
+            actions=self._actions,
+            previous_actions=self._previous_actions,
+            before_previous_actions=self._before_previous_actions,
+            leg_positions=positions,
+            leg_soft_lower=soft_lower,
+            leg_soft_upper=soft_upper,
+            collision_count=collision,
+            tracking_sigma=self.cfg.tracking_sigma,
+            jump=bool(getattr(self.cfg, "wyw_jump_enabled", False)),
+        )
         if bool(getattr(self.cfg, "wyw_jump_enabled", False)):
             terms.update(self._compute_wyw_jump_terms(leg_lengths))
             terms["pen_theta_no0"] = torch.square(torch.stack((left_theta, right_theta), dim=-1)).sum(dim=-1)
@@ -685,28 +663,20 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         # advance ours here to preserve that ordering.
         self._advance_fdu_commands()
         reward_terms = self._postprocess_reward_terms(self._compute_fdu_reward_terms())
-        rewards = {
-            key: self.cfg.rewards[key] * reward_terms.get(key, torch.zeros(self.num_envs, device=self.device)) * self.step_dt
-            for key in self.cfg.rewards
-        }
-        clip_single = getattr(self.cfg, "clip_single_reward", None)
-        if clip_single is not None:
-            bound = abs(float(clip_single)) * self.step_dt
-            rewards = {key: torch.clamp(value, -bound, bound) for key, value in rewards.items()}
-        if bool(getattr(self.cfg, "only_positive_rewards", False)) and rewards:
-            total = torch.stack(list(rewards.values()), dim=-1).sum(dim=-1)
-            rewards[next(iter(rewards))] += torch.clamp_min(-total, 0.0)
-        bad = self._numerical_safety_reset_buf
-        for key, value in rewards.items():
-            value = torch.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
-            rewards[key] = torch.where(bad, torch.zeros_like(value), value)
+        total_reward, rewards = aggregate_fdu_rewards(
+            reward_terms,
+            self.cfg.rewards,
+            step_dt=self.step_dt,
+            clip_single_reward=getattr(self.cfg, "clip_single_reward", None),
+            only_positive_rewards=bool(getattr(self.cfg, "only_positive_rewards", False)),
+            invalid_mask=self._numerical_safety_reset_buf,
+        )
         self._last_reward_terms = {key: value.detach() for key, value in rewards.items()}
         for key, value in rewards.items():
             self._episode_sums.setdefault(key, torch.zeros(self.num_envs, device=self.device))
             self._episode_sums[key] += value
-        total_reward = torch.stack([rewards[key] for key in self.cfg.rewards], dim=-1).sum(dim=-1)
         self._last_total_reward = total_reward.detach()
-        return torch.nan_to_num(total_reward, nan=0.0, posinf=0.0, neginf=0.0)
+        return total_reward
 
     def _advance_fdu_commands(self) -> None:
         sync_cmd_iteration = getattr(self, "_sync_command_generator_training_iteration", None)
@@ -722,7 +692,9 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         if env_ids.numel() == 0 or not hasattr(self, "_wyw_command_ranges_x"):
             return
         ranges = self._wyw_command_ranges_x[env_ids]
-        values = ranges[:, 0] + torch.rand(env_ids.numel(), device=self.device) * (ranges[:, 1] - ranges[:, 0])
+        values = sample_uniform_command_from_ranges(
+            ranges, torch.rand(env_ids.numel(), device=self.device)
+        )
         self.command_generator.vel_command_b[env_ids, 0] = values
 
     def _resample_custom_cmd(self, command_counter: torch.Tensor):
@@ -746,41 +718,18 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         if tracking_sum is None:
             return
         tracking_rate = tracking_sum[env_ids] / max(float(self.max_episode_length_s), 1.0e-6)
-        move_up = distance > (float(terrain.cfg.terrain_generator.size[0]) / 4.0)
-        move_down = (tracking_rate < 0.4) & (~move_up)
-
         old_levels = terrain.terrain_levels[env_ids].clone()
-        candidate_levels = old_levels + move_up.long() - move_down.long()
-        success = candidate_levels >= int(terrain.max_terrain_level)
-        failure = candidate_levels < 0
+        move_up, move_down, _success, updated_ranges = compute_fdu_rough_curriculum_transition(
+            old_levels=old_levels,
+            terrain_types=terrain.terrain_types[env_ids],
+            distance=distance,
+            tracking_rate=tracking_rate,
+            command_ranges_x=self._wyw_command_ranges_x[env_ids],
+            terrain_length=float(terrain.cfg.terrain_generator.size[0]),
+            max_terrain_level=int(terrain.max_terrain_level),
+        )
         terrain.update_env_origins(env_ids, move_up, move_down)
-
-        # Fudan narrows failed ranges towards [-1, 1]. Successful terrains
-        # expand by 0.05, with an additional 0.45 for basic terrain classes.
-        failed_ids = env_ids[failure]
-        if failed_ids.numel() > 0:
-            self._wyw_command_ranges_x[failed_ids, 0] = torch.clamp(
-                self._wyw_command_ranges_x[failed_ids, 0] + 0.25, min=-2.5, max=-1.0
-            )
-            self._wyw_command_ranges_x[failed_ids, 1] = torch.clamp(
-                self._wyw_command_ranges_x[failed_ids, 1] - 0.25, min=1.0, max=2.5
-            )
-
-        successful_ids = env_ids[success & (tracking_rate > 0.7)]
-        if successful_ids.numel() > 0:
-            terrain_types = terrain.terrain_types[successful_ids]
-            # Reproduce Fudan's executable index sets exactly. Its variable
-            # names for the two stair ranges are reversed relative to the
-            # generated geometry: basic={0:12,14:18}, advanced={12:14,18:20}.
-            basic = (terrain_types < 12) | ((terrain_types >= 14) & (terrain_types < 18))
-            delta = torch.where(basic, 0.5, 0.05)
-            max_abs = torch.where(basic, 2.5, 1.5)
-            self._wyw_command_ranges_x[successful_ids, 0] = torch.maximum(
-                self._wyw_command_ranges_x[successful_ids, 0] - delta, -max_abs
-            )
-            self._wyw_command_ranges_x[successful_ids, 1] = torch.minimum(
-                self._wyw_command_ranges_x[successful_ids, 1] + delta, max_abs
-            )
+        self._wyw_command_ranges_x[env_ids] = updated_ranges
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Use Fudan's persisted tilt failure while retaining numerical safety."""

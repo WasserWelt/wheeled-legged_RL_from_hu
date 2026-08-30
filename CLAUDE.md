@@ -10,6 +10,8 @@ RL training/deployment code for wheeled-legged (wheelbipe) robots, built on **Is
 
 use `conda activate isaaclab_2`
 
+cloude gpu is `gpu_isaac`
+
 The three `source/` packages must be installed editable, and scripts must run **from the repo root** (env code does `import scripts.utils.velocity_trace_html`; otherwise `ModuleNotFoundError: No module named 'scripts'`). Activate the conda env with Isaac Sim/Lab first.
 
 ```bash
