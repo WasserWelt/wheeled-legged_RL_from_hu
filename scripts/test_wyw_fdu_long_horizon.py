@@ -113,13 +113,7 @@ def main() -> None:
                 assert torch.all(env.height_cmd[reset_ids] >= 0.15)
                 assert torch.all(env.height_cmd[reset_ids] <= 0.30)
                 log = extras.get("log", {})
-                for key in (
-                    "Episode/FDU_L0Boundary/affected_env_fraction",
-                    "Episode/FDU_L0Boundary/mean_physics_samples",
-                    "Episode/FDU_L0Boundary/entry_events",
-                    "Episode/FDU_L0Boundary/min_measured_l0_m",
-                ):
-                    assert key in log, key
+                assert "Episode/FDU_L0Boundary/affected_env_fraction" in log
                 if args_cli.variant == "rough":
                     curriculum_changed = bool(
                         torch.any(env.terrain.terrain_levels != initial_levels).item()

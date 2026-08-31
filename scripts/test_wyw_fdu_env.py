@@ -302,18 +302,11 @@ def main():
             raw_attr="_wyw_failure_termination_raw_buf",
         ))
 
-        # The calibrated-boundary monitor must retain a substep event, expose
-        # it in runner/TensorBoard logs, and avoid turning it into a reset.
+        # The compact boundary monitor retains the per-episode affected flag.
         synthetic_l0 = torch.full((n, 2), 0.20, device=env.device)
         synthetic_l0[0, 0] = 0.13
-        previous_entry_count = int(env._wyw_l0_boundary_total_entries.item())
         env._update_wyw_l0_stability_monitor(synthetic_l0)
-        env._flush_wyw_l0_stability_monitor()
-        assert int(env._wyw_l0_boundary_total_entries.item()) == previous_entry_count + 1
         assert int(env._wyw_l0_boundary_episode_samples[0].item()) >= 1
-        assert env._wyw_l0_global_min_m <= 0.13
-        assert "Diagnostics/FDU_L0Boundary/total_entry_events" in env.extras["log"]
-        assert "Diagnostics/FDU_L0Boundary/total_physics_samples" in env.extras["log"]
 
         episode_length_saved = env.episode_length_buf.clone()
         env.episode_length_buf.fill_(env.max_episode_length - 1)
@@ -374,8 +367,7 @@ def main():
                 f"truncated={rollout_truncated} max_joint_vel={max_joint_vel:.6f} "
                 f"max_root_lin_vel={max_root_lin_vel:.6f} "
                 f"max_root_ang_vel={max_root_ang_vel:.6f} "
-                f"max_applied_torque={max_applied_torque:.6f} "
-                f"l0_global_min={float(env._wyw_l0_global_min_m.item()):.6f}",
+                f"max_applied_torque={max_applied_torque:.6f}",
                 flush=True,
             )
 

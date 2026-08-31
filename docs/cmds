@@ -18,3 +18,16 @@ cd /home/wyw/my_tasks/RL_2026/wheeled-legged_RL_from_hu
 source ~/anaconda3/etc/profile.d/conda.sh 
 conda activate isaaclab_2 
 python scripts/rsl_rl/train.py --task=Robotics-Wheelbipe-FDU-wyw-Flat-v1 --num_envs=1 --max_iterations=3
+
+#云gpu测试
+cd /root/gpufree-data/wheeled-legged_RL_from_hu
+
+OMNI_KIT_ACCEPT_EULA=YES \
+PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
+/opt/conda/envs/isaaclab/bin/python -u scripts/rsl_rl/train.py \
+  --task=Robotics-Wheelbipe-FDU-wyw-Flat-v1 \
+  --num_envs=8192 \
+  --max_iterations=5000 \
+  --seed=42 \
+  --device=cuda:0 \
+  --run_name=flat_p0_8192_iter5000

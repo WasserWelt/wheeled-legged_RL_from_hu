@@ -18,25 +18,43 @@ so the recording isolates linkage geometry rather than balance control.
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--output", default="docs/fdu_validation/video/fdu_l0_phi0.mp4")
+parser.add_argument(
+    "--model",
+    choices=("fdu", "old_chuan_v2"),
+    default="fdu",
+    help="asset/geometry convention; default preserves the original FDU validation",
+)
+parser.add_argument(
+    "--output",
+    default=None,
+    help="MP4 path; defaults to a model-specific file under docs/fdu_validation/video",
+)
 parser.add_argument("--seconds", type=float, default=10.0)
 parser.add_argument("--fps", type=int, default=30)
 parser.add_argument(
     "--physics-hz",
     type=float,
-    default=400.0,
-    help="Physics and continuous command update frequency (default: 400 Hz)",
+    default=None,
+    help="physics/command frequency; defaults to 400 Hz for FDU and 500 Hz for old_chuan_v2",
 )
 parser.add_argument("--width", type=int, default=800, help="Isaac render width")
 parser.add_argument("--height", type=int, default=720)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
+if args_cli.output is None:
+    if args_cli.model == "old_chuan_v2":
+        args_cli.output = "docs/fdu_validation/video/old_chuan_v2_l0_phi0.mp4"
+    else:
+        args_cli.output = "docs/fdu_validation/video/fdu_l0_phi0.mp4"
+if args_cli.physics_hz is None:
+    args_cli.physics_hz = 500.0 if args_cli.model == "old_chuan_v2" else 400.0
 args_cli.enable_cameras = True
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
@@ -50,7 +68,8 @@ from isaaclab.assets import Articulation  # noqa: E402
 from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg  # noqa: E402
 from isaaclab.sensors import Camera, CameraCfg  # noqa: E402
 from isaaclab.sim import SimulationContext  # noqa: E402
-from isaaclab.utils.math import quat_from_matrix  # noqa: E402
+from isaaclab.utils.math import quat_apply, quat_from_matrix  # noqa: E402
+from pxr import UsdPhysics  # noqa: E402
 
 from agent_tasks.direct.wheelbipe.wyw.fdu_mapping import (  # noqa: E402
     FDU_DEFAULT_OFFSET,
@@ -63,6 +82,7 @@ from agent_tasks.direct.wheelbipe.wyw.fdu_mapping import (  # noqa: E402
     solve_equivalent_kite,
 )
 from agent_world.assets.wheelbipe_fdu import Wheelbipe_FDU_CFG  # noqa: E402
+from agent_world.assets.wheelbipe_old_chuan_v2 import Wheelbipe_OldChuanV2_CFG  # noqa: E402
 
 
 COL_FRONT = (255, 60, 210)   # RGB: lf0/rf0 physical front drive bar
@@ -238,7 +258,299 @@ def _test_trajectory(time_s: float, duration_s: float) -> tuple[float, float, st
     return l0, phi0, "COMBINED (same L/R)"
 
 
-def main() -> None:
+# old_chuan_V2 is deliberately kept separate from the FDU analytical kite.
+# These coordinates were identified by scanning the converted V2 USD itself:
+#   shape = (front_1 - rear_1) / 2  -> physical hip-to-wheel L0
+#   swing = (front_1 + rear_1) / 2  -> physical phi0
+# No FDU link length, joint offset, inverse kinematics, or limit is reused.
+_OLD_DRIVE_NAMES = (
+    "left_front_1_joint", "left_rear_1_joint",
+    "right_front_1_joint", "right_rear_1_joint",
+)
+_OLD_LOOP_NAMES = {
+    "left_A_loop_joint", "left_B_loop_joint",
+    "right_A_loop_joint", "right_B_loop_joint",
+}
+
+
+def _old_chuan_trajectory(time_s: float, duration_s: float) -> tuple[float, float, str]:
+    fraction = min(max(time_s / duration_s, 0.0), 1.0 - 1.0e-9)
+
+    def smoothstep(value: float) -> float:
+        value = min(max(value, 0.0), 1.0)
+        return value**3 * (value * (value * 6.0 - 15.0) + 10.0)
+
+    neutral_shape, short_shape, long_shape = 0.55, 0.28, 0.84
+    if fraction < 0.12:
+        shape = neutral_shape + (short_shape - neutral_shape) * smoothstep(fraction / 0.12)
+        return shape, -shape, "LENGTH: RETRACT"
+    if fraction < 0.21:
+        return short_shape, -short_shape, "LENGTH: HOLD SHORT"
+    if fraction < 0.45:
+        shape = short_shape + (long_shape - short_shape) * smoothstep((fraction - 0.21) / 0.24)
+        return shape, -shape, "LENGTH: EXTEND"
+    if fraction < 0.55:
+        return long_shape, -long_shape, "LENGTH: HOLD EXTENDED"
+    if fraction < 0.65:
+        shape = long_shape + (neutral_shape - long_shape) * smoothstep((fraction - 0.55) / 0.10)
+        return shape, -shape, "LENGTH: RETURN NEUTRAL"
+    if fraction < 0.83:
+        swing = 0.30 * math.sin(2.0 * math.pi * (fraction - 0.65) / 0.18)
+        return neutral_shape + swing, -neutral_shape + swing, "SWING SWEEP (L0 HELD)"
+    local = (fraction - 0.83) / 0.17
+    shape = neutral_shape + 0.20 * math.sin(2.0 * math.pi * local)
+    swing = 0.20 * math.sin(4.0 * math.pi * local)
+    return shape + swing, -shape + swing, "COMBINED LENGTH + SWING"
+
+
+def _old_loop_anchors(sim: SimulationContext, robot: Articulation):
+    anchors = []
+    for prim in sim.stage.Traverse():
+        if prim.GetName() not in _OLD_LOOP_NAMES:
+            continue
+        joint = UsdPhysics.Joint(prim)
+        body0 = joint.GetBody0Rel().GetTargets()[0].name
+        body1 = joint.GetBody1Rel().GetTargets()[0].name
+        local0 = torch.tensor(joint.GetLocalPos0Attr().Get(), dtype=torch.float, device=robot.device)
+        local1 = torch.tensor(joint.GetLocalPos1Attr().Get(), dtype=torch.float, device=robot.device)
+        anchors.append((prim.GetName(), _body_id(robot, body0), local0, _body_id(robot, body1), local1))
+    if {row[0] for row in anchors} != _OLD_LOOP_NAMES:
+        raise RuntimeError(f"expected four old_chuan loop joints, found {[row[0] for row in anchors]}")
+    return anchors
+
+
+def _old_loop_gap_mm(robot: Articulation, anchors) -> float:
+    gaps = []
+    for _, body0, local0, body1, local1 in anchors:
+        point0 = robot.data.body_pos_w[0, body0] + quat_apply(robot.data.body_quat_w[0, body0], local0)
+        point1 = robot.data.body_pos_w[0, body1] + quat_apply(robot.data.body_quat_w[0, body1], local1)
+        gaps.append(torch.linalg.vector_norm(point0 - point1))
+    return 1000.0 * float(torch.max(torch.stack(gaps)))
+
+
+def _old_leg_state(positions: torch.Tensor, body_ids: dict[str, int], side: str) -> dict:
+    front_hip = positions[body_ids[f"{side}_front_1_link"]]
+    rear_hip = positions[body_ids[f"{side}_rear_1_link"]]
+    hip = 0.5 * (front_hip + rear_hip)
+    wheel = positions[body_ids[f"{side}_wheel_link"]]
+    delta = wheel - hip
+    return {
+        "hip": hip,
+        "front_end": positions[body_ids[f"{side}_front_2_link"]],
+        "rear_end": positions[body_ids[f"{side}_rear_2_link"]],
+        "front_mid": positions[body_ids[f"{side}_front_3_link"]],
+        "front_tip": positions[body_ids[f"{side}_front_4_link"]],
+        "wheel": wheel,
+        "l0": float(torch.linalg.vector_norm(delta[(0, 2),])),
+        "phi0": float(torch.atan2(-delta[0], -delta[2])),
+    }
+
+
+def _draw_old_leg(
+    panel: np.ndarray,
+    center: tuple[int, int],
+    side: str,
+    state: dict,
+    q_front: float,
+    q_rear: float,
+) -> None:
+    origin = np.asarray(center, dtype=np.float64)
+    hip = state["hip"].detach().cpu().numpy()
+    pixels_per_m = 520.0
+
+    def px(point: torch.Tensor) -> tuple[int, int]:
+        point_np = point.detach().cpu().numpy()
+        planar = np.array((point_np[0] - hip[0], -(point_np[2] - hip[2])))
+        return tuple(np.rint(origin + pixels_per_m * planar).astype(int))
+
+    o = tuple(origin.astype(int))
+    front, rear, middle, tip, wheel = map(
+        px,
+        (state["front_end"], state["rear_end"], state["front_mid"], state["front_tip"], state["wheel"]),
+    )
+    cv2.line(panel, o, (o[0], o[1] + 120), (80, 80, 85), 1, cv2.LINE_AA)
+    for start, end, color, width in (
+        (o, front, COL_FRONT, 8), (o, rear, COL_REAR, 8),
+        (front, middle, COL_COUPLER, 5), (middle, tip, COL_COUPLER, 5),
+        (rear, wheel, COL_COUPLER, 5), (o, wheel, COL_L0, 4),
+    ):
+        cv2.line(panel, start, end, color[::-1], width, cv2.LINE_AA)
+    for point in (o, front, rear, middle, tip, wheel):
+        cv2.circle(panel, point, 5, (245, 245, 245), -1, cv2.LINE_AA)
+    phi_degrees = math.degrees(state["phi0"])
+    start_deg, end_deg = sorted((90.0, 90.0 + phi_degrees))
+    cv2.ellipse(panel, o, (42, 42), 0.0, start_deg, end_deg, COL_PHI[::-1], 3, cv2.LINE_AA)
+    _put_text(panel, side, (18, center[1] - 82), 0.72, (255, 255, 255), 2)
+    _put_text(panel, f"L0 measured = {state['l0']:.4f} m", (center[0] - 122, center[1] + 135), 0.50, COL_L0[::-1], 2)
+    _put_text(panel, f"phi0 measured = {state['phi0']:+.3f} rad", (center[0] - 122, center[1] + 158), 0.46, COL_PHI[::-1], 1)
+    _put_text(panel, f"drive front/rear = [{q_front:+.3f}, {q_rear:+.3f}] rad", (center[0] - 122, center[1] + 180), 0.39, (190, 195, 205), 1)
+
+
+def _compose_old_frame(rgb: np.ndarray, values: dict, frame_index: int, fps: int) -> np.ndarray:
+    camera_bgr = cv2.cvtColor(rgb[..., :3], cv2.COLOR_RGB2BGR)
+    lab = cv2.cvtColor(camera_bgr, cv2.COLOR_BGR2LAB)
+    luminance, channel_a, channel_b = cv2.split(lab)
+    luminance = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(luminance)
+    camera_bgr = cv2.cvtColor(cv2.merge((luminance, channel_a, channel_b)), cv2.COLOR_LAB2BGR)
+    panel = np.full((camera_bgr.shape[0], 480, 3), (22, 24, 30), dtype=np.uint8)
+    _put_text(panel, "MEASURED LINKS -> EQUIVALENT LEG", (18, 34), 0.62, (245, 245, 245), 2)
+    _put_text(panel, "phi0: vertical-down = 0", (18, 58), 0.50, COL_PHI[::-1], 1)
+    _put_text(panel, f"TEST: {values['stage']}", (18, 82), 0.48, (180, 235, 255), 2)
+    _put_text(panel, f"TARGET front/rear: {values['front']:+.3f} / {values['rear']:+.3f} rad", (18, 105), 0.43, (205, 210, 220), 1)
+    _draw_old_leg(panel, (240, 215), "LEFT", values["left"], values["q"][0], values["q"][1])
+    _draw_old_leg(panel, (240, 535), "RIGHT", values["right"], values["q"][2], values["q"][3])
+    _put_text(panel, f"max loop gap = {values['gap_mm']:.4f} mm", (18, 706), 0.44, (145, 240, 175), 1)
+    cv2.rectangle(camera_bgr, (12, 12), (512, 116), (12, 14, 18), -1)
+    _put_text(camera_bgr, "old_chuan_V2 calibrated geometry", (24, 40), 0.68, (250, 250, 250), 2)
+    _put_text(camera_bgr, "MAGENTA: front drive bars", (24, 66), 0.54, COL_FRONT[::-1], 2)
+    _put_text(camera_bgr, "CYAN: rear drive bars", (24, 89), 0.54, COL_REAR[::-1], 2)
+    _put_text(camera_bgr, "YELLOW: measured hip-to-wheel L0", (24, 112), 0.54, COL_L0[::-1], 2)
+    _put_text(camera_bgr, f"t = {frame_index / fps:5.2f} s", (camera_bgr.shape[1] - 145, 32), 0.58)
+    return np.concatenate((camera_bgr, panel), axis=1)
+
+
+def _main_old_chuan_v2() -> None:
+    if args_cli.seconds <= 0.0 or args_cli.fps <= 0 or args_cli.physics_hz <= 0.0:
+        raise ValueError("--seconds, --fps and --physics-hz must be positive")
+    sim_dt = 1.0 / args_cli.physics_hz
+    sim = SimulationContext(
+        sim_utils.SimulationCfg(dt=sim_dt, render_interval=1, device=args_cli.device, gravity=(0.0, 0.0, 0.0))
+    )
+    light_cfg = sim_utils.DomeLightCfg(intensity=180.0, color=(0.82, 0.86, 0.94))
+    light_cfg.func("/World/Light", light_cfg)
+    cfg = Wheelbipe_OldChuanV2_CFG.replace(prim_path="/World/Robot")
+    cfg.spawn = cfg.spawn.replace(
+        articulation_props=sim_utils.ArticulationRootPropertiesCfg(
+            fix_root_link=True,
+            enabled_self_collisions=False,
+            solver_position_iteration_count=16,
+            solver_velocity_iteration_count=6,
+        )
+    )
+    robot = Articulation(cfg)
+    markers = VisualizationMarkers(
+        VisualizationMarkersCfg(
+            prim_path="/World/Visuals/OldChuanGeometry",
+            markers={
+                "front": sim_utils.CylinderCfg(radius=0.012, height=1.0, visual_material=_material(COL_FRONT)),
+                "rear": sim_utils.CylinderCfg(radius=0.012, height=1.0, visual_material=_material(COL_REAR)),
+                "l0": sim_utils.CylinderCfg(radius=0.008, height=1.0, visual_material=_material(COL_L0)),
+            },
+        )
+    )
+    camera = Camera(
+        CameraCfg(
+            prim_path="/World/Camera", update_period=0.0, data_types=["rgb"],
+            width=args_cli.width, height=args_cli.height,
+            spawn=sim_utils.PinholeCameraCfg(
+                focal_length=36.0, focus_distance=2.0, horizontal_aperture=32.0, clipping_range=(0.05, 20.0)
+            ),
+        )
+    )
+    sim.reset()
+    camera.set_world_poses_from_view(
+        torch.tensor([[0.92, -1.15, 0.68]], dtype=torch.float, device=camera.device),
+        torch.tensor([[-0.10, -0.12, 0.43]], dtype=torch.float, device=camera.device),
+    )
+    drive_ids = [robot.joint_names.index(name) for name in _OLD_DRIVE_NAMES]
+    body_names = [
+        f"{side}_{name}_link"
+        for side in ("left", "right")
+        for name in ("front_1", "rear_1", "front_2", "rear_2", "front_3", "front_4", "wheel")
+    ]
+    body_ids = {name: _body_id(robot, name) for name in body_names}
+    anchors = _old_loop_anchors(sim, robot)
+    neutral = torch.tensor((0.55, -0.55, 0.55, -0.55), dtype=torch.float, device=robot.device)
+    for _ in range(round(0.5 / sim_dt)):
+        robot.set_joint_position_target(neutral[None], joint_ids=drive_ids)
+        robot.write_data_to_sim()
+        sim.step(render=False)
+        robot.update(sim_dt)
+    for _ in range(12):
+        robot.write_data_to_sim()
+        sim.step(render=True)
+        robot.update(sim_dt)
+    camera.update(sim_dt, force_recompute=True)
+
+    output = Path(args_cli.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(
+        str(output), cv2.VideoWriter_fourcc(*"mp4v"), args_cli.fps,
+        (args_cli.width + 480, args_cli.height),
+    )
+    if not writer.isOpened():
+        raise RuntimeError(f"could not open MP4 writer for {output}")
+    frame_count = round(args_cli.seconds * args_cli.fps)
+    physics_step = 0
+    max_gap_mm = 0.0
+    max_torque_nm = 0.0
+    l0_range = {"left": [float("inf"), float("-inf")], "right": [float("inf"), float("-inf")]}
+    try:
+        for frame_index in range(frame_count):
+            target_step = math.ceil((frame_index + 1) / (args_cli.fps * sim_dt))
+            while physics_step < target_step:
+                front, rear, _ = _old_chuan_trajectory(physics_step * sim_dt, args_cli.seconds)
+                target = torch.tensor(((front, rear, front, rear),), dtype=torch.float, device=robot.device)
+                robot.set_joint_position_target(target, joint_ids=drive_ids)
+                robot.write_data_to_sim()
+                sim.step(render=True)
+                robot.update(sim_dt)
+                physics_step += 1
+            front, rear, stage = _old_chuan_trajectory(physics_step * sim_dt, args_cli.seconds)
+            positions = robot.data.body_pos_w[0]
+            left = _old_leg_state(positions, body_ids, "left")
+            right = _old_leg_state(positions, body_ids, "right")
+            starts = torch.stack((
+                positions[body_ids["left_front_1_link"]], positions[body_ids["left_rear_1_link"]],
+                positions[body_ids["right_front_1_link"]], positions[body_ids["right_rear_1_link"]],
+                left["hip"], right["hip"],
+            ))
+            ends = torch.stack((
+                left["front_end"], left["rear_end"], right["front_end"], right["rear_end"],
+                left["wheel"], right["wheel"],
+            ))
+            translations, orientations, scales = _segment_poses(starts, ends)
+            markers.visualize(
+                translations=translations, orientations=orientations, scales=scales,
+                marker_indices=[0, 1, 0, 1, 2, 2],
+            )
+            sim.render()
+            camera.update(sim_dt, force_recompute=True)
+            gap_mm = _old_loop_gap_mm(robot, anchors)
+            torque_nm = float(torch.max(torch.abs(robot.data.applied_torque[0, drive_ids])))
+            max_gap_mm = max(max_gap_mm, gap_mm)
+            max_torque_nm = max(max_torque_nm, torque_nm)
+            for side, state in (("left", left), ("right", right)):
+                l0_range[side][0] = min(l0_range[side][0], state["l0"])
+                l0_range[side][1] = max(l0_range[side][1], state["l0"])
+            values = {
+                "stage": stage, "front": front, "rear": rear, "left": left, "right": right,
+                "q": robot.data.joint_pos[0, drive_ids].detach().cpu().tolist(), "gap_mm": gap_mm,
+            }
+            rgb = camera.data.output["rgb"][0].detach().cpu().numpy()
+            writer.write(_compose_old_frame(rgb, values, frame_index, args_cli.fps))
+    finally:
+        writer.release()
+    report = {
+        "model": "old_chuan_v2",
+        "usd": cfg.spawn.usd_path,
+        "video": str(output.resolve()),
+        "geometry_source": "old_chuan_V2 USD calibration scan; no FDU linkage constants",
+        "shape_coordinate": "(front_1-rear_1)/2",
+        "swing_coordinate": "(front_1+rear_1)/2",
+        "physics_hz": args_cli.physics_hz,
+        "solver_iterations": [16, 6],
+        "max_loop_gap_mm": max_gap_mm,
+        "max_drive_torque_nm": max_torque_nm,
+        "measured_l0_range_m": l0_range,
+        "passed": max_gap_mm < 1.0 and max_torque_nm < 40.0,
+    }
+    report_path = output.with_suffix(".json")
+    report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2), flush=True)
+
+
+def _main_fdu() -> None:
     if args_cli.seconds <= 0.0 or args_cli.fps <= 0 or args_cli.physics_hz <= 0.0:
         raise ValueError("--seconds, --fps and --physics-hz must be positive")
     if args_cli.width < 640 or args_cli.height < 720:
@@ -436,6 +748,13 @@ def main() -> None:
         f"max_left_right_physical_error: L0={max_l0_symmetry_error:.6f} m "
         f"phi0={max_phi0_symmetry_error:.6f} rad"
     )
+
+
+def main() -> None:
+    if args_cli.model == "old_chuan_v2":
+        _main_old_chuan_v2()
+    else:
+        _main_fdu()
 
 
 if __name__ == "__main__":

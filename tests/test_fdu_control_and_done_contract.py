@@ -140,3 +140,75 @@ def test_rough_boundary_is_immediate_termination_not_timeout():
         )
         for node in ast.walk(get_dones)
     )
+
+
+def test_wyw_done_reasons_are_latched_and_logged_separately():
+    env_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env.py"
+    source = env_path.read_text(encoding="utf-8")
+    for reason in (
+        "orientation",
+        "contact",
+        "persistent_failure",
+        "numerical_safety",
+        "terrain_boundary",
+    ):
+        assert f"_wyw_done_reason_{reason}" in source
+        assert f'"Termination/Count/{{name}}"' in source
+        assert f'"Termination/Fraction/{{name}}"' in source
+    assert "Termination/ContactBody/" in source
+
+
+def test_persistent_failure_has_unclipped_terminal_penalty():
+    env_cfg_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env_cfg.py"
+    tree = ast.parse(env_cfg_path.read_text(encoding="utf-8"))
+    for rewards_name in ("FDU_PLANE_REWARDS", "FDU_JUMP_REWARDS"):
+        assignment = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == rewards_name for target in node.targets)
+        )
+        values = {
+            keyword.arg: ast.literal_eval(keyword.value)
+            for keyword in assignment.value.keywords
+        }
+        assert values["termination"] == -200.0
+
+    env_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env.py"
+    env_source = env_path.read_text(encoding="utf-8")
+    assert 'self.cfg.rewards.get("termination", 0.0)' in env_source
+    assert '"_wyw_failure_termination_reward_mask"' in env_source
+    for required_mask in (
+        "persistent_failure",
+        "terminate",
+        "~time_out",
+        "~immediate_terminate",
+        "~boundary_terminate",
+    ):
+        assert required_mask in env_source
+
+
+def test_flat_command_curriculum_starts_at_slow_speed():
+    env_cfg_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env_cfg.py"
+    source = env_cfg_path.read_text(encoding="utf-8")
+    # Flat and Rough each explicitly restore the slow initial range after the
+    # shared helper installs the task-wide command plumbing.
+    assert source.count("self.commands.ranges.lin_vel_x = (-0.5, 0.5)") == 2
+
+
+def test_l0_tensorboard_logging_keeps_only_episode_affected_fraction():
+    env_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env.py"
+    source = env_path.read_text(encoding="utf-8")
+    assert '"Episode/FDU_L0Boundary/affected_env_fraction"' in source
+    for removed_key in (
+        "Episode/FDU_L0Boundary/mean_physics_samples",
+        "Episode/FDU_L0Boundary/entry_events",
+        "Episode/FDU_L0Boundary/min_measured_l0_m",
+        "Diagnostics/FDU_L0Boundary/current_env_count",
+        "Diagnostics/FDU_L0Boundary/current_env_fraction",
+        "Diagnostics/FDU_L0Boundary/current_min_measured_l0_m",
+        "Diagnostics/FDU_L0Boundary/global_min_measured_l0_m",
+        "Diagnostics/FDU_L0Boundary/total_physics_samples",
+        "Diagnostics/FDU_L0Boundary/total_entry_events",
+    ):
+        assert removed_key not in source

@@ -239,6 +239,16 @@ def test_reward_weight_dt_then_per_term_clip_then_sum():
     assert one_sided.item() == pytest.approx(0.0)
 
 
+def test_failure_termination_reward_is_one_shot_and_not_clipped():
+    persistent_failure = torch.tensor([True, False, False])
+    reward = S.compute_fdu_failure_termination_reward(
+        persistent_failure,
+        termination_scale=-200.0,
+        step_dt=0.01,
+    )
+    assert torch.equal(reward, torch.tensor([-2.0, 0.0, 0.0]))
+
+
 def test_three_action_history_matches_reward_and_critic_timing():
     zero = torch.zeros(1, 6)
     a1 = torch.tensor([[.1, .2, .3, .4, .5, .6]])

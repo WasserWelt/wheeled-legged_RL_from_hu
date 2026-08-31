@@ -1,0 +1,26 @@
+{
+  "model": "old_chuan_v2",
+  "usd": "/home/wyw/my_tasks/RL_2026/wheeled-legged_RL_from_hu/source/agent_world/agent_world/assets/usd_files/wheelbipe_old_chuan_v2/old_chuan_V2.usd",
+  "video": "/home/wyw/my_tasks/RL_2026/wheeled-legged_RL_from_hu/docs/fdu_validation/video/old_chuan_v2_l0_phi0.mp4",
+  "geometry_source": "old_chuan_V2 USD calibration scan; no FDU linkage constants",
+  "shape_coordinate": "(front_1-rear_1)/2",
+  "swing_coordinate": "(front_1+rear_1)/2",
+  "physics_hz": 500.0,
+  "solver_iterations": [
+    16,
+    6
+  ],
+  "max_loop_gap_mm": 0.001407430204380944,
+  "max_drive_torque_nm": 0.5945076942443848,
+  "measured_l0_range_m": {
+    "left": [
+      0.15760600566864014,
+      0.31506556272506714
+    ],
+    "right": [
+      0.15760591626167297,
+      0.31506651639938354
+    ]
+  },
+  "passed": true
+}
