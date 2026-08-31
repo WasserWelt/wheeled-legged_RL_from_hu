@@ -40,6 +40,32 @@ from agent_rl.rsl_rl.algorithms import PPOSequence
 from agent_rl.rsl_rl.modules import ActorCriticSequence
 
 
+def _sequence_tensorboard_tag(key: str) -> str:
+    """Route legacy environment keys into compact TensorBoard groups."""
+    prefixes = (
+        ("Episode/Reward/", "RewardTerms/"),
+        ("Episode/Reset/", "Termination/Count/"),
+        ("Episode/FDU_L0Boundary/", "FDU/L0/Episode/"),
+    )
+    for source, target in prefixes:
+        if key.startswith(source):
+            return target + key[len(source) :]
+    if "/" in key:
+        return key
+    return "EpisodeSummary/" + key
+
+
+_SEQUENCE_CONSOLE_KEYS = {
+    "Episode/Reset/terminate",
+    "Episode/Reset/time_out",
+    "Termination/Count/orientation",
+    "Termination/Count/contact",
+    "Termination/Count/numerical_safety",
+    "Termination/Count/terrain_boundary",
+    "Episode/FDU_L0Boundary/affected_env_fraction",
+}
+
+
 class OnPolicySequenceRunner(OnPolicyRunner):
     """带历史序列 encoder 的 on-policy runner。"""
 
@@ -222,12 +248,110 @@ class OnPolicySequenceRunner(OnPolicyRunner):
                     for path in git_file_paths:
                         self.writer.save_file(path)
 
-        # Save the final model after training
+        # Save the final model after training.
         if self.log_dir is not None and not self.disable_logs:
             self.save(
                 os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"),
                 infos={"score": cur_score},
             )
+
+    def log(self, locs, width=80, pad=35):
+        """Log WYW training with compact terminal output and split TB groups."""
+        collection_size = self.num_steps_per_env * self.env.num_envs * getattr(
+            self, "gpu_world_size", 1
+        )
+        self.tot_timesteps += collection_size
+        iteration_time = locs["collection_time"] + locs["learn_time"]
+        self.tot_time += iteration_time
+
+        episode_values: dict[str, torch.Tensor] = {}
+        if locs["ep_infos"]:
+            all_keys = sorted({key for info in locs["ep_infos"] for key in info})
+            for key in all_keys:
+                values = []
+                for info in locs["ep_infos"]:
+                    if key not in info:
+                        continue
+                    value = info[key]
+                    value = value if isinstance(value, torch.Tensor) else torch.tensor(float(value))
+                    values.append(value.detach().float().reshape(-1).to(self.device))
+                if not values:
+                    continue
+                mean_value = torch.cat(values).mean()
+                episode_values[key] = mean_value
+                self.writer.add_scalar(_sequence_tensorboard_tag(key), mean_value, locs["it"])
+
+        loss_dict = locs.get("loss_dict") or {}
+        for key, value in loss_dict.items():
+            scalar = value.item() if isinstance(value, torch.Tensor) else float(value)
+            if key.startswith("encoder_"):
+                _, metric = key.split("encoder_", 1)
+                self.writer.add_scalar("Encoder/" + metric.replace("_", "/"), scalar, locs["it"])
+            else:
+                self.writer.add_scalar(f"Loss/{key}", scalar, locs["it"])
+        self.writer.add_scalar("Loss/learning_rate", self.alg.learning_rate, locs["it"])
+
+        mean_std = self.alg.policy.action_std.mean()
+        fps = int(collection_size / iteration_time) if iteration_time > 0 else 0
+        self.writer.add_scalar("Policy/mean_noise_std", mean_std.item(), locs["it"])
+        self.writer.add_scalar("Perf/total_fps", fps, locs["it"])
+        self.writer.add_scalar("Perf/collection_time", locs["collection_time"], locs["it"])
+        self.writer.add_scalar("Perf/learning_time", locs["learn_time"], locs["it"])
+
+        if locs["rewbuffer"]:
+            mean_reward = statistics.mean(locs["rewbuffer"])
+            mean_length = statistics.mean(locs["lenbuffer"])
+            self.writer.add_scalar("Train/mean_reward", mean_reward, locs["it"])
+            self.writer.add_scalar("Train/mean_episode_length", mean_length, locs["it"])
+            if self.logger_type != "wandb":
+                self.writer.add_scalar("Train/mean_reward/time", mean_reward, self.tot_time)
+                self.writer.add_scalar("Train/mean_episode_length/time", mean_length, self.tot_time)
+
+        tot_iter = locs.get("tot_iter", locs.get("num_learning_iterations", 0))
+        title = f" \033[1m Learning iteration {locs['it']}/{tot_iter} \033[0m "
+        lines = [
+            "#" * width,
+            title.center(width, " "),
+            "",
+            f"{'Computation:':>{pad}} {fps} steps/s (collection: {locs['collection_time']:.3f}s, learning {locs['learn_time']:.3f}s)",
+            f"{'Mean action noise std:':>{pad}} {mean_std.item():.2f}",
+        ]
+        for key in ("value_function", "surrogate", "encoder", "mean_kl"):
+            if key in loss_dict:
+                lines.append(f"{f'Mean {key} loss:':>{pad}} {float(loss_dict[key]):.4f}")
+        if locs["rewbuffer"]:
+            lines.extend(
+                (
+                    f"{'Mean reward:':>{pad}} {statistics.mean(locs['rewbuffer']):.2f}",
+                    f"{'Mean episode length:':>{pad}} {statistics.mean(locs['lenbuffer']):.2f}",
+                )
+            )
+        # Keep the terminal useful for reward shaping: TensorBoard gets the
+        # compact ``RewardTerms/*`` group, while stdout prints every reward
+        # term reported by the environment.
+        for key in sorted(episode_values):
+            if key.startswith("Episode/Reward/"):
+                lines.append(
+                    f"{f'{_sequence_tensorboard_tag(key)}:':>{pad}} {episode_values[key]:.4f}"
+                )
+        for key in sorted(_SEQUENCE_CONSOLE_KEYS):
+            if key in episode_values:
+                lines.append(f"{f'{_sequence_tensorboard_tag(key)}:':>{pad}} {episode_values[key]:.4f}")
+
+        start_iter = locs.get("start_iter", 0)
+        completed_iterations = max(locs["it"] - start_iter + 1, 1)
+        remaining_iterations = max(tot_iter - locs["it"] - 1, 0)
+        eta_seconds = self.tot_time / completed_iterations * remaining_iterations
+        lines.extend(
+            (
+                "-" * width,
+                f"{'Total timesteps:':>{pad}} {self.tot_timesteps}",
+                f"{'Iteration time:':>{pad}} {iteration_time:.2f}s",
+                f"{'Time elapsed:':>{pad}} {time.strftime('%H:%M:%S', time.gmtime(self.tot_time))}",
+                f"{'ETA:':>{pad}} {time.strftime('%H:%M:%S', time.gmtime(eta_seconds))}",
+            )
+        )
+        print("\n".join(lines) + "\n")
 
     def save(self, path, infos=None, is_best=False):
         torch.save(

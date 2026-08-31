@@ -130,7 +130,8 @@ Jump 的权重：`tracking_lin_vel=1`、`tracking_lin_vel_enhance=1`、`tracking
 - Jump `nominal_state` 包含 theta 不对称项以及 `10*(L0_left-L0_right)^2`。
 
 Flat/Rough `clip_single_reward=1.0`，Jump 为 `2.5`，所以单项最终步长裁剪分别为
-`±0.01` 和 `±0.025`。`only_positive_rewards=False`，没有显式 termination reward。
+`±0.01` 和 `±0.025`。`only_positive_rewards=False`。姿态/接触持续失败终止会在单项裁剪之后
+额外加入 `termination=-200 * 0.01 = -2.0`；timeout、地形越界和数值安全重置不加该惩罚。
 Plane 的 collision raw term 因没有被惩罚接触 link 通常为零；Jump 检查 base/leg link 的
 大于 `0.1 N` 接触。当前代码有意保留 Fudan 的 `base_air_time *= ~in_flight` 跨 reset
 状态 bug，后续修正版应作为独立消融实验。

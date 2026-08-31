@@ -255,6 +255,15 @@ def aggregate_fdu_rewards(
     return torch.nan_to_num(total, nan=0.0, posinf=0.0, neginf=0.0), weighted
 
 
+def compute_fdu_failure_termination_reward(
+    persistent_failure: torch.Tensor,
+    termination_scale: float,
+    step_dt: float,
+) -> torch.Tensor:
+    """Return the one-shot failure reward applied after per-term clipping."""
+    return persistent_failure.to(dtype=torch.float) * float(termination_scale) * float(step_dt)
+
+
 def update_persistent_condition(
     condition: torch.Tensor,
     counter: torch.Tensor,

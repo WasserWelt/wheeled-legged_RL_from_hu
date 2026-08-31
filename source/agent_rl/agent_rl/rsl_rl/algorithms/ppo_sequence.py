@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 
 from agent_rl.rsl_rl.storage.rollout_storage_sequence import RolloutStorageSequence
@@ -47,6 +48,9 @@ class PPOSequence:
         entropy_coef=0.01,
         learning_rate=1e-3,
         extra_learning_rate=1e-3,
+        encoder_loss="mse",
+        encoder_huber_delta=1.0,
+        encoder_exclude_terminal=False,
         max_grad_norm=1.0,
         use_clipped_value_loss=True,
         schedule="adaptive",
@@ -94,6 +98,11 @@ class PPOSequence:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
+        if encoder_loss not in {"mse", "smooth_l1"}:
+            raise ValueError(f"Unsupported encoder_loss={encoder_loss!r}; expected 'mse' or 'smooth_l1'")
+        self.encoder_loss = encoder_loss
+        self.encoder_huber_delta = float(encoder_huber_delta)
+        self.encoder_exclude_terminal = bool(encoder_exclude_terminal)
 
     def init_storage(
         self,
@@ -268,11 +277,24 @@ class PPOSequence:
         generator = self.storage.encoder_mini_batch_generator(
             self.num_mini_batches, self.num_learning_epochs
         )
-        for next_obs_batch, critic_obs_batch, obs_history_batch in generator:
+        for next_obs_batch, critic_obs_batch, obs_history_batch, dones_batch in generator:
             latent_batch = self.policy.encode(obs_history_batch)
-            vel_est_loss = (
-                (latent_batch[:, :3] - critic_obs_batch[:, :3]).pow(2).mean()
-            )
+            encoder_mask = ~dones_batch.squeeze(-1).bool() if self.encoder_exclude_terminal else None
+            if encoder_mask is not None and not torch.any(encoder_mask):
+                continue
+            velocity_prediction = latent_batch[:, :3]
+            velocity_target = critic_obs_batch[:, :3]
+            if encoder_mask is not None:
+                velocity_prediction = velocity_prediction[encoder_mask]
+                velocity_target = velocity_target[encoder_mask]
+            if self.encoder_loss == "smooth_l1":
+                vel_est_loss = F.smooth_l1_loss(
+                    velocity_prediction,
+                    velocity_target,
+                    beta=self.encoder_huber_delta,
+                )
+            else:
+                vel_est_loss = F.mse_loss(velocity_prediction, velocity_target)
             if self.policy.latent_dim > 3:
                 obs_denoise_loss = (
                     (
@@ -299,6 +321,8 @@ class PPOSequence:
         mean_kl /= max(num_updates, 1)
         if num_updates_extra > 0:
             mean_extra_loss /= num_updates_extra
+
+        encoder_diagnostics = self._compute_encoder_diagnostics()
         self.storage.clear()
 
         return {
@@ -306,4 +330,47 @@ class PPOSequence:
             "surrogate": mean_surrogate_loss,
             "encoder": mean_extra_loss,
             "mean_kl": mean_kl,
+            **encoder_diagnostics,
         }
+
+    @torch.inference_mode()
+    def _compute_encoder_diagnostics(self) -> dict[str, float]:
+        """Summarize velocity targets and post-update encoder predictions.
+
+        The full rollout is evaluated in mini-batch-sized chunks to avoid a
+        second large activation spike.  Absolute p99/max metrics expose rare
+        closed-loop physics outliers that an average MSE otherwise hides.
+        """
+        history = self.storage.observation_history.flatten(0, 1)
+        target = self.storage.privileged_observations.flatten(0, 1)[:, :3]
+        done = self.storage.dones.flatten(0, 1).squeeze(-1).bool()
+        if history.numel() == 0:
+            return {}
+
+        chunk_size = max(history.shape[0] // max(self.num_mini_batches, 1), 1)
+        predictions = []
+        for start in range(0, history.shape[0], chunk_size):
+            predictions.append(self.policy.encode(history[start : start + chunk_size])[:, :3])
+        prediction = torch.cat(predictions, dim=0)
+        error = prediction - target
+
+        def stats(prefix: str, tensor: torch.Tensor) -> dict[str, float]:
+            abs_flat = tensor.abs().reshape(-1).float()
+            return {
+                f"encoder_{prefix}_rms": float(torch.sqrt(torch.mean(tensor.float().square())).item()),
+                f"encoder_{prefix}_p99_abs": float(torch.quantile(abs_flat, 0.99).item()),
+                f"encoder_{prefix}_max_abs": float(abs_flat.max().item()),
+            }
+
+        diagnostics = {}
+        diagnostics.update(stats("target", target))
+        diagnostics.update(stats("latent", prediction))
+        diagnostics.update(stats("error", error))
+        diagnostics["encoder_nonterminal_mse"] = float(
+            error[~done].float().square().mean().item()
+        ) if torch.any(~done) else 0.0
+        diagnostics["encoder_terminal_mse"] = float(
+            error[done].float().square().mean().item()
+        ) if torch.any(done) else 0.0
+        diagnostics["encoder_terminal_sample_fraction"] = float(done.float().mean().item())
+        return diagnostics

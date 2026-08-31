@@ -241,4 +241,5 @@ class RolloutStorageSequence:
                 next_obs_batch = next_observations[batch_idx]
                 critic_observations_batch = critic_observations[batch_idx]
                 obs_history_batch = obs_history[batch_idx]
-                yield next_obs_batch, critic_observations_batch, obs_history_batch
+                dones_batch = self.dones.flatten(0, 1)[batch_idx]
+                yield next_obs_batch, critic_observations_batch, obs_history_batch, dones_batch

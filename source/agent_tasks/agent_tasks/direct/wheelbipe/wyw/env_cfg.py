@@ -44,6 +44,7 @@ from .rough_cfg import FDU_ROUGH_TERRAIN_CFG
 
 
 FDU_PLANE_REWARDS = OrderedDict(
+    termination=-200.0,
     tracking_lin_vel=1.0,
     tracking_lin_vel_enhance=1.0,
     tracking_ang_vel=1.0,
@@ -62,6 +63,7 @@ FDU_PLANE_REWARDS = OrderedDict(
 )
 
 FDU_JUMP_REWARDS = OrderedDict(
+    termination=-200.0,
     tracking_lin_vel=1.0,
     tracking_lin_vel_enhance=1.0,
     tracking_ang_vel=1.0,
@@ -477,8 +479,9 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     ]
     wyw_collision_contact_force = 0.1
     wyw_failure_contact_force = 10.0
-    # Plane command curriculum: at the 20 s global cadence, expand vx by 0.1
-    # after mean linear/yaw tracking rates exceed 0.70/0.56, capped at +/-2.5.
+    # Plane command curriculum: begin with a learnable slow-speed band, then at
+    # the 20 s global cadence expand vx by 0.1 after mean linear/yaw tracking
+    # rates exceed 0.70/0.56, capped at +/-2.5.
     wyw_flat_command_curriculum_enabled = True
     wyw_command_curriculum_interval_steps = 2000
     wyw_command_curriculum_lin_threshold = 0.7
@@ -511,9 +514,6 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     # The 500 Hz / 16/6 scans showed persistent loop limit cycles below it.
     wyw_l0_stability_monitor_enabled = True
     wyw_l0_stability_boundary_m = 0.14
-    wyw_l0_stability_check_interval_steps = 10
-    wyw_l0_stability_warning_interval_steps = 1000
-    wyw_l0_stability_log_max_env_ids = 16
     wyw_l0_tuck = 0.23
     wyw_l0_extend = 0.31
     wyw_base_height_flight = 0.65
@@ -528,7 +528,7 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
         super().__post_init__()
         _apply_wyw_common(self)
         self.scene.num_envs = 4096
-        self.commands.ranges.lin_vel_x = (-2.0, 2.0)
+        self.commands.ranges.lin_vel_x = (-0.5, 0.5)
         self.commands.resampling_time_range = (5.0, 5.0)
 
 
@@ -562,7 +562,7 @@ class WheelbipeWywRoughEnvCfg(WheelbipeWywFlatEnvCfg):
         self.wheel_forward_scan_cfg["enabled"] = False
         self.terrain_command_overrides = {}
         _apply_wyw_common(self)
-        self.commands.ranges.lin_vel_x = (-2.0, 2.0)
+        self.commands.ranges.lin_vel_x = (-0.5, 0.5)
         self.commands.resampling_time_range = (5.0, 5.0)
 
 

@@ -29,7 +29,6 @@ from __future__ import annotations
 
 from typing import Sequence
 
-import carb
 import torch
 from isaaclab.utils.math import quat_apply, quat_inv
 
@@ -47,9 +46,9 @@ from .fdu_semantics import (
     build_fdu_dr_privilege,
     build_fdu_policy_observation,
     compute_fdu_collision_count,
+    compute_fdu_failure_termination_reward,
     compute_fdu_jump_reward_terms,
     compute_fdu_plane_reward_terms,
-    compute_fdu_failure_contact_condition,
     compute_fdu_flat_command_curriculum_transition,
     compute_fdu_rough_curriculum_transition,
     filter_fdu_wheel_contacts,
@@ -154,29 +153,8 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             self.num_envs, 2, dtype=torch.bool, device=self.device
         )
         self._wyw_base_air_time = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
-        self._wyw_l0_boundary_active = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self._wyw_l0_boundary_episode_samples = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
-        )
-        self._wyw_l0_boundary_episode_entries = torch.zeros(
-            self.num_envs, dtype=torch.long, device=self.device
-        )
-        self._wyw_l0_episode_min_m = torch.full(
-            (self.num_envs,), float("inf"), dtype=torch.float, device=self.device
-        )
-        self._wyw_l0_boundary_total_samples = torch.zeros((), dtype=torch.long, device=self.device)
-        self._wyw_l0_boundary_total_entries = torch.zeros((), dtype=torch.long, device=self.device)
-        self._wyw_l0_global_min_m = torch.full((), float("inf"), dtype=torch.float, device=self.device)
-        self._wyw_l0_boundary_last_warning_step = -10**12
-        self._wyw_l0_boundary_last_sample_active = False
-        self._wyw_l0_boundary_pending_entries = torch.zeros(
-            self.num_envs, dtype=torch.bool, device=self.device
-        )
-        self._wyw_l0_boundary_pending_active = torch.zeros(
-            self.num_envs, dtype=torch.bool, device=self.device
-        )
-        self._wyw_l0_pending_min_m = torch.full(
-            (self.num_envs,), float("inf"), dtype=torch.float, device=self.device
         )
         # critic 特权项索引 / 基准：FDU root + 未随机化的默认关节位。
         base_idx, _ = self.robot.find_bodies("base_link_del")
@@ -191,44 +169,57 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         reset_env_ids = self._as_env_ids_tensor(env_ids)
+        # Snapshot the terminal-step attribution before the base reset mutates
+        # robot/contact state.  These masks are populated in ``_get_dones`` and
+        # are diagnostics only: they do not alter the done contract.
+        done_reason_masks = {}
+        for name in (
+            "orientation",
+            "contact",
+            "persistent_failure",
+            "numerical_safety",
+            "terrain_boundary",
+        ):
+            mask = getattr(self, f"_wyw_done_reason_{name}", None)
+            if mask is not None and reset_env_ids.numel() > 0:
+                done_reason_masks[name] = mask[reset_env_ids].clone()
+        terminal_contact_by_body = None
+        terminal_contact_names: list[str] = []
+        contact_body_mask = getattr(self, "_wyw_done_contact_body_mask", None)
+        if contact_body_mask is not None and reset_env_ids.numel() > 0:
+            terminal_contact_by_body = contact_body_mask[reset_env_ids].clone()
+            sensor_body_names = list(getattr(self.contact_sensor, "body_names", []))
+            terminal_contact_names = [sensor_body_names[index] for index in self._reset_contact_link_idx]
         monitor_ready = getattr(self, "_wyw_buffers_ready", False) and hasattr(
             self, "_wyw_l0_boundary_episode_samples"
         )
         if monitor_ready and reset_env_ids.numel() > 0:
             episode_boundary_samples = self._wyw_l0_boundary_episode_samples[reset_env_ids].clone()
-            episode_boundary_entries = self._wyw_l0_boundary_episode_entries[reset_env_ids].clone()
-            episode_min_l0 = self._wyw_l0_episode_min_m[reset_env_ids].clone()
         self._update_fdu_flat_command_curriculum(reset_env_ids)
         self._update_fdu_rough_curriculum(reset_env_ids)
         super()._reset_idx(env_ids)
         self._ensure_wyw_buffers()
+        if done_reason_masks:
+            log = self.extras.setdefault("log", {})
+            reset_count = max(int(reset_env_ids.numel()), 1)
+            for name, mask in done_reason_masks.items():
+                count = int(mask.count_nonzero().item())
+                log[f"Termination/Count/{name}"] = count
+                log[f"Termination/Fraction/{name}"] = count / reset_count
+            if terminal_contact_by_body is not None:
+                for body_index, body_name in enumerate(terminal_contact_names):
+                    log[f"Termination/ContactBody/{body_name}"] = int(
+                        terminal_contact_by_body[:, body_index].count_nonzero().item()
+                    )
         if self._wyw_flat_curriculum_pending_log is not None:
             self.extras.setdefault("log", {}).update(self._wyw_flat_curriculum_pending_log)
             self._wyw_flat_curriculum_pending_log = None
         if monitor_ready and reset_env_ids.numel() > 0:
-            finite_min = episode_min_l0[torch.isfinite(episode_min_l0)]
             log = self.extras.setdefault("log", {})
-            log.update(
-                {
-                    "Episode/FDU_L0Boundary/affected_env_fraction": float(
-                        torch.mean((episode_boundary_samples > 0).float()).item()
-                    ),
-                    "Episode/FDU_L0Boundary/mean_physics_samples": float(
-                        torch.mean(episode_boundary_samples.float()).item()
-                    ),
-                    "Episode/FDU_L0Boundary/entry_events": int(episode_boundary_entries.sum().item()),
-                    "Episode/FDU_L0Boundary/min_measured_l0_m": (
-                        float(finite_min.min().item()) if finite_min.numel() else float("nan")
-                    ),
-                }
+            log["Episode/FDU_L0Boundary/affected_env_fraction"] = float(
+                torch.mean((episode_boundary_samples > 0).float()).item()
             )
-            self._wyw_l0_boundary_active[reset_env_ids] = False
-            self._wyw_l0_boundary_pending_entries[reset_env_ids] = False
-            self._wyw_l0_boundary_pending_active[reset_env_ids] = False
-            self._wyw_l0_pending_min_m[reset_env_ids] = float("inf")
             self._wyw_l0_boundary_episode_samples[reset_env_ids] = 0
-            self._wyw_l0_boundary_episode_entries[reset_env_ids] = 0
-            self._wyw_l0_episode_min_m[reset_env_ids] = float("inf")
         self._wyw_obs_hist[reset_env_ids] = 0.0
         self._wyw_history_needs_fill[reset_env_ids] = True
         self._sample_wyw_lin_vel_command(reset_env_ids)
@@ -462,90 +453,13 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         return torch.linalg.vector_norm(delta[..., (0, 2)], dim=-1)
 
     def _update_wyw_l0_stability_monitor(self, measured_l0: torch.Tensor) -> None:
-        """GPU-only 500 Hz sampling for the calibrated stability boundary."""
+        """Retain only whether each episode ever crossed the L0 boundary."""
         if not bool(getattr(self.cfg, "wyw_l0_stability_monitor_enabled", True)):
             return
         threshold = float(self.cfg.wyw_l0_stability_boundary_m)
         per_env_min = measured_l0.min(dim=-1).values
         active = per_env_min <= threshold
-        entries = active & ~self._wyw_l0_boundary_active
         self._wyw_l0_boundary_episode_samples += active.long()
-        self._wyw_l0_boundary_episode_entries += entries.long()
-        self._wyw_l0_boundary_total_samples += active.sum()
-        self._wyw_l0_boundary_total_entries += entries.sum()
-        self._wyw_l0_episode_min_m = torch.minimum(self._wyw_l0_episode_min_m, per_env_min)
-        self._wyw_l0_global_min_m = torch.minimum(self._wyw_l0_global_min_m, per_env_min.min())
-        self._wyw_l0_boundary_active.copy_(active)
-        self._wyw_l0_boundary_pending_entries |= entries
-        self._wyw_l0_boundary_pending_active |= active
-        self._wyw_l0_pending_min_m = torch.minimum(self._wyw_l0_pending_min_m, per_env_min)
-
-    def _flush_wyw_l0_stability_monitor(self) -> None:
-        """Publish latched 500 Hz samples at most once per 100 Hz policy step."""
-        if not bool(getattr(self.cfg, "wyw_l0_stability_monitor_enabled", True)):
-            return
-
-        step = int(getattr(self, "common_step_counter", 0))
-        check_interval = max(int(self.cfg.wyw_l0_stability_check_interval_steps), 1)
-        has_new_entries = bool(self._wyw_l0_boundary_pending_entries.any().item())
-        if step % check_interval != 0 and not has_new_entries:
-            return
-
-        threshold = float(self.cfg.wyw_l0_stability_boundary_m)
-        pending_active = self._wyw_l0_boundary_pending_active
-        pending_min = self._wyw_l0_pending_min_m
-        active_ids = pending_active.nonzero(as_tuple=False).flatten()
-        active_count = int(active_ids.numel())
-        log = self.extras.setdefault("log", {})
-        log.update(
-            {
-                "Diagnostics/FDU_L0Boundary/current_env_count": active_count,
-                "Diagnostics/FDU_L0Boundary/current_env_fraction": active_count / max(self.num_envs, 1),
-                "Diagnostics/FDU_L0Boundary/current_min_measured_l0_m": float(pending_min.min().item()),
-                "Diagnostics/FDU_L0Boundary/global_min_measured_l0_m": float(
-                    self._wyw_l0_global_min_m.item()
-                ),
-                "Diagnostics/FDU_L0Boundary/total_physics_samples": int(
-                    self._wyw_l0_boundary_total_samples.item()
-                ),
-                "Diagnostics/FDU_L0Boundary/total_entry_events": int(
-                    self._wyw_l0_boundary_total_entries.item()
-                ),
-            }
-        )
-
-        warning_interval = max(int(self.cfg.wyw_l0_stability_warning_interval_steps), 1)
-        should_warn = active_count > 0 and (
-            not self._wyw_l0_boundary_last_sample_active
-            or step - self._wyw_l0_boundary_last_warning_step >= warning_interval
-        )
-        if should_warn:
-            max_ids = max(int(self.cfg.wyw_l0_stability_log_max_env_ids), 1)
-            shown_ids = active_ids[:max_ids]
-            shown_lengths = pending_min[shown_ids]
-            marker = "[WYW:FDU:L0-STABILITY-BOUNDARY]"
-            message = (
-                f"{marker} WARNING: measured physical L0 <= {threshold:.3f} m at 500 Hz/16/6; "
-                "the closed loop may enter its calibrated numerical limit-cycle region. "
-                f"step={step} active_envs={active_count}/{self.num_envs} "
-                f"env_ids={shown_ids.detach().cpu().tolist()} "
-                f"min_l0_m={shown_lengths.detach().cpu().tolist()} "
-                f"batch_min_m={float(pending_min.min().item()):.6f} "
-                f"global_min_m={float(self._wyw_l0_global_min_m.item()):.6f} "
-                f"total_entries={int(self._wyw_l0_boundary_total_entries.item())}. "
-                "Search logs for 'WYW:FDU:L0-STABILITY-BOUNDARY'."
-            )
-            carb.log_warn(message)
-            self._wyw_l0_boundary_last_warning_step = step
-        elif active_count == 0 and self._wyw_l0_boundary_last_sample_active:
-            carb.log_info(
-                "[WYW:FDU:L0-STABILITY-BOUNDARY] RECOVERED: no environment is currently "
-                f"at or below {threshold:.3f} m; step={step}."
-            )
-        self._wyw_l0_boundary_last_sample_active = active_count > 0
-        self._wyw_l0_boundary_pending_entries.zero_()
-        self._wyw_l0_boundary_pending_active.zero_()
-        self._wyw_l0_pending_min_m.fill_(float("inf"))
 
     def _compute_wyw_jump_terms(self, leg_lengths: torch.Tensor) -> dict[str, torch.Tensor]:
         """fudan 涌现式跳跃奖励项（均为 per-step 速率，后续统一 ×step_dt）。"""
@@ -587,7 +501,6 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         # Capture the fifth/final 500 Hz result, which becomes available only
         # after DirectRLEnv finishes the decimation loop.
         self._update_wyw_l0_stability_monitor(self._get_wyw_measured_leg_lengths())
-        self._flush_wyw_l0_stability_monitor()
         left_len, right_len = leg_lengths[:, 0], leg_lengths[:, 1]
         left_theta, right_theta = leg_angles[:, 0], leg_angles[:, 1]
 
@@ -671,6 +584,21 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             only_positive_rewards=bool(getattr(self.cfg, "only_positive_rewards", False)),
             invalid_mask=self._numerical_safety_reset_buf,
         )
+        # Match Fudan's terminal-reward ordering: add the one-shot failure
+        # penalty after positive/term clipping. Timeouts, terrain boundaries,
+        # and numerical-safety resets intentionally do not enter this mask.
+        failure_termination = getattr(
+            self,
+            "_wyw_failure_termination_reward_mask",
+            torch.zeros(self.num_envs, dtype=torch.bool, device=self.device),
+        )
+        termination_reward = compute_fdu_failure_termination_reward(
+            failure_termination,
+            self.cfg.rewards.get("termination", 0.0),
+            self.step_dt,
+        )
+        rewards["termination"] = termination_reward
+        total_reward = total_reward + termination_reward
         self._last_reward_terms = {key: value.detach() for key, value in rewards.items()}
         for key, value in rewards.items():
             self._episode_sums.setdefault(key, torch.zeros(self.num_envs, device=self.device))
@@ -782,11 +710,19 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         contact_forces = getattr(self.contact_sensor.data, "net_forces_w", None)
         if contact_forces is None:
             bad_contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
-        else:
-            bad_contact = compute_fdu_failure_contact_condition(
-                contact_forces[:, self._reset_contact_link_idx],
-                float(self.cfg.wyw_failure_contact_force),
+            bad_contact_by_body = torch.zeros(
+                self.num_envs,
+                len(self._reset_contact_link_idx),
+                dtype=torch.bool,
+                device=self.device,
             )
+        else:
+            failure_forces = contact_forces[:, self._reset_contact_link_idx]
+            bad_contact_by_body = (
+                torch.linalg.vector_norm(failure_forces, dim=-1)
+                > float(self.cfg.wyw_failure_contact_force)
+            )
+            bad_contact = torch.any(bad_contact_by_body, dim=-1)
         bad_orientation = self.robot.data.projected_gravity_b[:, 2] > -0.1
         persistent_failure = self._apply_termination_duration(
             bad_orientation | bad_contact,
@@ -797,8 +733,24 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         # classify that reset as an episode-length timeout. In particular, it
         # must not enter the one-second contact/tilt persistence counter.
         terminate = immediate_terminate | persistent_failure | boundary_terminate
+        # Latched for reset-time attribution.  ``orientation`` and ``contact``
+        # are the raw conditions on the terminal step; ``persistent_failure``
+        # is the actual one-second persisted decision used by the environment.
+        self._wyw_done_reason_orientation = bad_orientation
+        self._wyw_done_reason_contact = bad_contact
+        self._wyw_done_reason_persistent_failure = persistent_failure
+        self._wyw_done_reason_numerical_safety = immediate_terminate
+        self._wyw_done_reason_terrain_boundary = boundary_terminate
+        self._wyw_done_contact_body_mask = bad_contact_by_body
         if self.cfg.play is True and not bool(getattr(self.cfg, "play_keep_done_reset", False)):
             terminate.zero_()
+        self._wyw_failure_termination_reward_mask = (
+            persistent_failure
+            & terminate
+            & ~time_out
+            & ~immediate_terminate
+            & ~boundary_terminate
+        )
         return terminate, time_out
 
     def _get_rough_terrain_boundary_termination(self) -> torch.Tensor:

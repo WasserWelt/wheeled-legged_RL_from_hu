@@ -120,6 +120,24 @@ class DreamWaqPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 
+SEQUENCE_PPO_ALGORITHM_CFG = dict(
+    class_name="PPOSequence",
+    value_loss_coef=1.0,
+    use_clipped_value_loss=True,
+    clip_param=0.2,
+    entropy_coef=0.01,
+    num_learning_epochs=5,
+    num_mini_batches=4,
+    learning_rate=1.0e-3,
+    extra_learning_rate=1.0e-3,
+    schedule="adaptive",
+    gamma=0.99,
+    lam=0.95,
+    desired_kl=0.005,
+    max_grad_norm=1.0,
+)
+
+
 @configclass
 class SequencePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     """fudan ActorCriticSequence 三元组的 runner 配置。
@@ -148,22 +166,7 @@ class SequencePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         activation="elu",
         orthogonal_init=False,
     )
-    algorithm = dict(
-        class_name="PPOSequence",
-        value_loss_coef=1.0,
-        use_clipped_value_loss=True,
-        clip_param=0.2,
-        entropy_coef=0.01,
-        num_learning_epochs=5,
-        num_mini_batches=4,  # mini batch size = num_envs*nsteps / nminibatches
-        learning_rate=1.0e-3,
-        extra_learning_rate=1.0e-3,  # encoder（隐式线速度估计器）单独优化器
-        schedule="adaptive",
-        gamma=0.99,
-        lam=0.95,
-        desired_kl=0.005,
-        max_grad_norm=1.0,
-    )
+    algorithm = dict(SEQUENCE_PPO_ALGORITHM_CFG)
 
 
 @configclass
@@ -171,6 +174,17 @@ class WheelbipeWywPPORunnerCfg(SequencePPORunnerCfg):
     """wyw 共享 runner（Flat 用）。三任务共享 Actor/Critic/PPO 超参，仅 experiment_name 分开。"""
 
     experiment_name = "wheelbipe_fdu_wyw_flat_direct"
+    # Bound the Gaussian policy before the environment maps leg actions to
+    # position targets.  This prevents rare samples from driving the closed
+    # linkage far outside its calibrated workspace.
+    clip_actions = 1.0
+    algorithm = {
+        **SEQUENCE_PPO_ALGORITHM_CFG,
+        "extra_learning_rate": 1.0e-4,
+        "encoder_loss": "smooth_l1",
+        "encoder_huber_delta": 1.0,
+        "encoder_exclude_terminal": True,
+    }
 
 
 @configclass
@@ -185,6 +199,9 @@ class WheelbipeWywJumpPPORunnerCfg(WheelbipeWywPPORunnerCfg):
     """wyw Jump：仅日志目录名与 Flat 分开，超参完全继承。"""
 
     experiment_name = "wheelbipe_fdu_wyw_jump_direct"
+    # Keep the emergent-jump action envelope compatible with the existing
+    # Fudan checkpoint family; Flat/Rough are the stability-first tasks.
+    clip_actions = 100.0
 
 
 @configclass
