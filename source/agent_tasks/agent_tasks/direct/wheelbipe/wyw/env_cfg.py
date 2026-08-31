@@ -511,10 +511,16 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     wyw_joint_acc_scale = 0.0025    # critic 专用
     wyw_torque_scale = 0.05         # critic 专用
     tracking_sigma = 0.25
+    # exp(-sin(tilt)^2 / sigma): approximately 0.30 at 10 degrees.
+    upright_orientation_sigma = 0.025
     # This is a diagnostic boundary, not an action clamp or termination.
     # The 500 Hz / 16/6 scans showed persistent loop limit cycles below it.
     wyw_l0_stability_monitor_enabled = True
     wyw_l0_stability_boundary_m = 0.14
+    # Optional play-mode visualization for auditing the body/virtual-leg
+    # coordinate conventions used by nominal_state and upright rewards.
+    wyw_balance_debug_vis = False
+    wyw_balance_debug_print_interval = 10
     wyw_l0_tuck = 0.23
     wyw_l0_extend = 0.31
     wyw_base_height_flight = 0.65

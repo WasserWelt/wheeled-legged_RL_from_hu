@@ -30,7 +30,15 @@ from __future__ import annotations
 from typing import Sequence
 
 import torch
-from isaaclab.utils.math import quat_apply, quat_inv
+import isaaclab.sim as sim_utils
+from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+from isaaclab.utils.math import (
+    euler_xyz_from_quat,
+    quat_apply,
+    quat_from_euler_xyz,
+    quat_from_matrix,
+    quat_inv,
+)
 
 from agent_tasks.direct.wheelbipe.wheelbipe25_v3.env import Wheelbipe25V3Env
 
@@ -105,7 +113,134 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self.static_priv_obs = self._get_static_priv_obs()
         self._wyw_buffers_ready = False
         self._ensure_wyw_buffers()
+        self._setup_wyw_balance_debug_vis()
         print(f"[WYW:FDU] policy joint order: {list(zip(POLICY_JOINT_NAMES, policy_indices))}")
+
+    @staticmethod
+    def _wyw_debug_segment_poses(
+        starts: torch.Tensor,
+        ends: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return midpoint, Z-axis orientation and scale for unit cylinders."""
+        delta = ends - starts
+        lengths = torch.linalg.vector_norm(delta, dim=-1).clamp_min(1.0e-8)
+        z_axis = delta / lengths.unsqueeze(-1)
+        reference = torch.zeros_like(z_axis)
+        reference[:, 1] = 1.0
+        parallel = torch.abs(torch.sum(reference * z_axis, dim=-1)) > 0.95
+        reference[parallel] = torch.tensor(
+            [1.0, 0.0, 0.0], dtype=starts.dtype, device=starts.device
+        )
+        x_axis = torch.linalg.cross(reference, z_axis, dim=-1)
+        x_axis /= torch.linalg.vector_norm(x_axis, dim=-1, keepdim=True).clamp_min(1.0e-8)
+        y_axis = torch.linalg.cross(z_axis, x_axis, dim=-1)
+        rotation = torch.stack((x_axis, y_axis, z_axis), dim=-1)
+        orientations = quat_from_matrix(rotation)
+        scales = torch.ones_like(starts)
+        scales[:, 2] = lengths
+        return 0.5 * (starts + ends), orientations, scales
+
+    def _setup_wyw_balance_debug_vis(self) -> None:
+        """Create play-only markers for the exact balance-reward coordinates."""
+        self._wyw_balance_debug_markers = None
+        if not (
+            bool(getattr(self.cfg, "play", False))
+            and bool(getattr(self.cfg, "wyw_balance_debug_vis", False))
+        ):
+            return
+
+        def material(rgb: tuple[float, float, float]) -> sim_utils.PreviewSurfaceCfg:
+            return sim_utils.PreviewSurfaceCfg(diffuse_color=rgb, roughness=0.3)
+
+        marker_cfg = VisualizationMarkersCfg(
+            prim_path="/Visuals/wyw_balance_debug",
+            markers={
+                "left_leg": sim_utils.CylinderCfg(
+                    radius=0.012, height=1.0, visual_material=material((1.0, 0.85, 0.05))
+                ),
+                "right_leg": sim_utils.CylinderCfg(
+                    radius=0.012, height=1.0, visual_material=material((0.05, 0.85, 1.0))
+                ),
+                "world_up": sim_utils.CylinderCfg(
+                    radius=0.010, height=1.0, visual_material=material((0.10, 1.0, 0.20))
+                ),
+                "body_up": sim_utils.CylinderCfg(
+                    radius=0.010, height=1.0, visual_material=material((1.0, 0.25, 0.05))
+                ),
+            },
+        )
+        self._wyw_balance_debug_markers = VisualizationMarkers(marker_cfg)
+        self._wyw_balance_debug_markers.set_visibility(True)
+        print(
+            "[WYW:BalanceDebug] yellow=left theta0, cyan=right theta0, "
+            "green=world up, orange=body +Z",
+            flush=True,
+        )
+
+    def _update_wyw_balance_debug_vis(self) -> None:
+        """Update env-0 geometry and live values used by the balance rewards."""
+        markers = getattr(self, "_wyw_balance_debug_markers", None)
+        if markers is None:
+            return
+
+        _, leg_lengths, leg_angles = self._get_wyw_virtual_leg_geometry()
+        theta_left = leg_angles[0, 0]
+        theta_right = leg_angles[0, 1]
+        theta_diff = theta_left - theta_right
+        nominal_state = torch.square(theta_diff)
+        gravity_b = self.robot.data.projected_gravity_b[0]
+        upright_sigma = max(float(self.cfg.upright_orientation_sigma), 1.0e-6)
+        upright = torch.exp(-torch.square(gravity_b[:2]).sum() / upright_sigma) * (
+            gravity_b[2] < 0.0
+        ).to(gravity_b.dtype)
+
+        root = self.robot.data.root_pos_w[0]
+        root_quat = self.robot.data.root_quat_w[0]
+        hip_positions = self.robot.data.body_pos_w[0, self._wyw_hip_link_idx]
+        zeros = torch.zeros((), dtype=root.dtype, device=self.device)
+        # theta0=0 is body-frame vertical-down. Positive theta follows the
+        # common Fudan x/down planar convention used on both mirrored sides.
+        leg_vectors_b = torch.stack(
+            (
+                torch.stack((-torch.sin(theta_left), zeros, -torch.cos(theta_left))),
+                torch.stack((-torch.sin(theta_right), zeros, -torch.cos(theta_right))),
+            )
+        ) * leg_lengths[0].unsqueeze(-1)
+        leg_vectors_w = quat_apply(root_quat.unsqueeze(0).expand(2, -1), leg_vectors_b)
+        leg_ends = hip_positions + leg_vectors_w
+
+        world_up_end = root + torch.tensor([0.0, 0.0, 0.32], device=self.device)
+        body_up_b = torch.tensor([[0.0, 0.0, 0.32]], device=self.device)
+        body_up_end = root + quat_apply(root_quat.unsqueeze(0), body_up_b)[0]
+        starts = torch.cat((hip_positions, root.unsqueeze(0), root.unsqueeze(0)), dim=0)
+        ends = torch.cat((leg_ends, world_up_end.unsqueeze(0), body_up_end.unsqueeze(0)), dim=0)
+        positions, orientations, scales = self._wyw_debug_segment_poses(starts, ends)
+        markers.visualize(
+            translations=positions.detach().cpu(),
+            orientations=orientations.detach().cpu(),
+            scales=scales.detach().cpu(),
+            marker_indices=torch.tensor([0, 1, 2, 3], dtype=torch.int32),
+        )
+
+        self._wyw_balance_debug_values = {
+            "theta_left": theta_left.detach(),
+            "theta_right": theta_right.detach(),
+            "theta_diff": theta_diff.detach(),
+            "nominal_state": nominal_state.detach(),
+            "upright": upright.detach(),
+            "projected_gravity": gravity_b.detach(),
+        }
+        interval = max(int(getattr(self.cfg, "wyw_balance_debug_print_interval", 10)), 1)
+        step = int(getattr(self, "common_step_counter", 0))
+        if step % interval == 0:
+            print(
+                "[WYW:BalanceDebug] "
+                f"step={step:06d} thetaL={float(theta_left):+.4f} "
+                f"thetaR={float(theta_right):+.4f} diff={float(theta_diff):+.4f} "
+                f"nominal={float(nominal_state):.5f} upright={float(upright):.5f} "
+                f"gravity_b={gravity_b.detach().cpu().tolist()}",
+                flush=True,
+            )
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._invalidate_step_caches()
@@ -401,6 +536,7 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             raise RuntimeError(
                 f"WYW critic observation has shape {observations['critic'].shape}, expected last dim 141"
             )
+        self._update_wyw_balance_debug_vis()
         return observations
 
     # ------------------------------------------------------------------ #
@@ -527,11 +663,27 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
                 float(self.cfg.wyw_collision_contact_force),
             )
 
+        jump_enabled = bool(getattr(self.cfg, "wyw_jump_enabled", False))
+        if jump_enabled:
+            tracking_lin_vel_x = self.robot.data.root_lin_vel_b[:, 0]
+            tracking_yaw_rate = self.robot.data.root_ang_vel_b[:, 2]
+        else:
+            zeros = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+            _, _, yaw = euler_xyz_from_quat(self.robot.data.root_quat_w)
+            heading_quat_inv = quat_inv(quat_from_euler_xyz(zeros, zeros, yaw))
+            root_lin_vel_heading = quat_apply(
+                heading_quat_inv, self.robot.data.root_lin_vel_w
+            )
+            tracking_lin_vel_x = root_lin_vel_heading[:, 0]
+            tracking_yaw_rate = self.robot.data.root_ang_vel_w[:, 2]
+
         terms = compute_fdu_plane_reward_terms(
             command_vx=self.command[:, 0],
             command_yaw=self.command[:, 2],
             base_lin_vel=self.robot.data.root_lin_vel_b,
             base_ang_vel=self.robot.data.root_ang_vel_b,
+            tracking_lin_vel_x=tracking_lin_vel_x,
+            tracking_yaw_rate=tracking_yaw_rate,
             projected_gravity=self.robot.data.projected_gravity_b,
             observed_height=observed_height,
             height_command=height_cmd,
@@ -550,7 +702,8 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             leg_soft_upper=soft_upper,
             collision_count=collision,
             tracking_sigma=self.cfg.tracking_sigma,
-            jump=bool(getattr(self.cfg, "wyw_jump_enabled", False)),
+            upright_orientation_sigma=self.cfg.upright_orientation_sigma,
+            jump=jump_enabled,
         )
         if bool(getattr(self.cfg, "wyw_jump_enabled", False)):
             terms.update(self._compute_wyw_jump_terms(leg_lengths))

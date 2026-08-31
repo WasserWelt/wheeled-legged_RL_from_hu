@@ -46,6 +46,18 @@ parser.add_argument("--slip_debug_interval", type=int, default=50, help="Steps b
 parser.add_argument("--slip_wheel_radius", type=float, default=None, help="Wheel radius used by slip diagnostics.")
 parser.add_argument("--slip_speed_threshold", type=float, default=0.25, help="Horizontal contact-point speed treated as slip.")
 parser.add_argument(
+    "--wyw_balance_debug",
+    action="store_true",
+    default=False,
+    help="Show WYW body-up and virtual-leg markers and print live nominal-state values.",
+)
+parser.add_argument(
+    "--wyw_balance_debug_interval",
+    type=int,
+    default=10,
+    help="Policy steps between WYW balance debug console updates.",
+)
+parser.add_argument(
     "--barlow_twins_jit",
     type=str,
     default=None,
@@ -317,6 +329,14 @@ def main():
         args_cli.task, device=args_cli.device, num_envs=args_cli.num_envs, use_fabric=not args_cli.disable_fabric
     )
     env_cfg.play = True
+    if args_cli.wyw_balance_debug:
+        if not hasattr(env_cfg, "wyw_balance_debug_vis"):
+            raise ValueError("--wyw_balance_debug is only supported by WYW FDU tasks")
+        env_cfg.wyw_balance_debug_vis = True
+        env_cfg.wyw_balance_debug_print_interval = max(
+            int(args_cli.wyw_balance_debug_interval), 1
+        )
+        env_cfg.scene.num_envs = 1
     terrain_cfg = getattr(env_cfg, "terrain", None)
     if getattr(terrain_cfg, "terrain_type", None) == "generator" and hasattr(env_cfg, "play_terrain_debug_vis"):
         env_cfg.play_terrain_debug_vis = True

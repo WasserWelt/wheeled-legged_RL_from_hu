@@ -38,6 +38,8 @@ def _reward_fixture() -> dict[str, torch.Tensor | float | bool]:
         "command_yaw": torch.tensor([0.2, -0.3]),
         "base_lin_vel": torch.tensor([[0.5, 0.1, -0.2], [-0.1, 0.0, 0.3]]),
         "base_ang_vel": torch.tensor([[0.2, -0.4, 0.0], [0.1, 0.2, -0.1]]),
+        "tracking_lin_vel_x": torch.tensor([0.5, -0.1]),
+        "tracking_yaw_rate": torch.tensor([0.0, -0.1]),
         "projected_gravity": torch.tensor([[0.1, -0.2, -0.97], [-0.3, 0.4, -0.8]]),
         "observed_height": torch.tensor([0.22, 0.27]),
         "height_command": torch.tensor([0.20, 0.25]),
@@ -56,6 +58,7 @@ def _reward_fixture() -> dict[str, torch.Tensor | float | bool]:
         "leg_soft_upper": torch.full((2, 4), 0.8),
         "collision_count": torch.tensor([2.0, 0.0]),
         "tracking_sigma": 0.25,
+        "upright_orientation_sigma": 0.025,
         "jump": False,
     }
 
@@ -133,18 +136,20 @@ def test_plane_raw_reward_formulas_match_fixed_fudan_fixture():
     f = _reward_fixture()
     terms = S.compute_fdu_plane_reward_terms(**f)
     sigma = 0.25
-    lin_err = (f["command_vx"] - f["base_lin_vel"][:, 0]).square()
-    yaw_err = (f["command_yaw"] - f["base_ang_vel"][:, 2]).square()
+    lin_err = (f["command_vx"] - f["tracking_lin_vel_x"]).square()
+    yaw_err = (f["command_yaw"] - f["tracking_yaw_rate"]).square()
+    tracking_gate = torch.clamp(-f["projected_gravity"][:, 2], 0.0, 0.7) / 0.7
     second = f["actions"] - 2 * f["previous_actions"] + f["before_previous_actions"]
     expected = {
-        "tracking_lin_vel": torch.exp(-lin_err / sigma),
+        "tracking_lin_vel": torch.exp(-lin_err / sigma) * tracking_gate,
         "tracking_lin_vel_enhance": torch.exp(-lin_err / sigma / 10) - 1,
-        "tracking_ang_vel": torch.exp(-yaw_err / sigma),
+        "tracking_ang_vel": torch.exp(-yaw_err / sigma) * tracking_gate,
         "tracking_ang_vel_enhance": torch.exp(-yaw_err / sigma / 10) - 1,
         "base_height": torch.exp(-(f["observed_height"] - f["height_command"]).square() / 0.001),
-        "upright_orientation": torch.clamp(
-            -f["projected_gravity"][:, 2], min=0.0, max=1.0
-        ).square(),
+        "upright_orientation": torch.exp(
+            -f["projected_gravity"][:, :2].square().sum(-1)
+            / f["upright_orientation_sigma"]
+        ) * (f["projected_gravity"][:, 2] < 0.0).float(),
         "nominal_state": (f["left_theta"] - f["right_theta"]).square(),
         "lin_vel_z": f["base_lin_vel"][:, 2].square(),
         "ang_vel_xy": f["base_ang_vel"][:, :2].square().sum(-1),
@@ -172,6 +177,43 @@ def test_upright_orientation_reward_rejects_sideways_and_upside_down_bases():
     )
     terms = S.compute_fdu_plane_reward_terms(**fixture)
     assert torch.equal(terms["upright_orientation"], torch.tensor([1.0, 0.0]))
+
+
+def test_upright_orientation_is_about_point_three_at_ten_degrees():
+    fixture = _reward_fixture()
+    angle = torch.deg2rad(torch.tensor(10.0))
+    fixture["projected_gravity"] = torch.tensor(
+        [[torch.sin(angle), 0.0, -torch.cos(angle)]]
+    )
+    terms = S.compute_fdu_plane_reward_terms(**fixture)
+    expected = torch.exp(-torch.sin(angle).square() / 0.025)
+    assert terms["upright_orientation"].item() == pytest.approx(expected.item())
+    assert terms["upright_orientation"].item() == pytest.approx(0.2994, abs=1.0e-3)
+
+
+def test_plane_tracking_uses_robotlab_gravity_gate_but_negative_enhance_does_not():
+    fixture = _reward_fixture()
+    fixture["command_vx"] = torch.zeros(3)
+    fixture["command_yaw"] = torch.zeros(3)
+    fixture["tracking_lin_vel_x"] = torch.zeros(3)
+    fixture["tracking_yaw_rate"] = torch.zeros(3)
+    fixture["projected_gravity"] = torch.tensor(
+        [
+            [0.0, 0.0, -1.0],
+            [0.0, 0.0, -0.35],
+            [0.0, 0.0, 0.1],
+        ]
+    )
+    # Expand unrelated batched inputs to the requested three environments.
+    for key, value in list(fixture.items()):
+        if torch.is_tensor(value) and value.shape[0] == 2:
+            fixture[key] = torch.cat((value, value[:1]), dim=0)
+    terms = S.compute_fdu_plane_reward_terms(**fixture)
+    expected_gate = torch.tensor([1.0, 0.5, 0.0])
+    assert torch.allclose(terms["tracking_lin_vel"], expected_gate)
+    assert torch.allclose(terms["tracking_ang_vel"], expected_gate)
+    assert torch.equal(terms["tracking_lin_vel_enhance"], torch.zeros(3))
+    assert torch.equal(terms["tracking_ang_vel_enhance"], torch.zeros(3))
 
 
 def test_jump_shared_and_jump_only_raw_formulas_match_fudan_fixture():

@@ -117,6 +117,8 @@ def compute_fdu_plane_reward_terms(
     command_yaw: torch.Tensor,
     base_lin_vel: torch.Tensor,
     base_ang_vel: torch.Tensor,
+    tracking_lin_vel_x: torch.Tensor,
+    tracking_yaw_rate: torch.Tensor,
     projected_gravity: torch.Tensor,
     observed_height: torch.Tensor,
     height_command: torch.Tensor,
@@ -135,13 +137,20 @@ def compute_fdu_plane_reward_terms(
     leg_soft_upper: torch.Tensor,
     collision_count: torch.Tensor,
     tracking_sigma: float,
+    upright_orientation_sigma: float,
     jump: bool,
 ) -> dict[str, torch.Tensor]:
     """Return raw Fudan Plane terms plus the shared subset used by Jump."""
     sigma = max(float(tracking_sigma), 1.0e-6)
-    lin_err = torch.square(command_vx - base_lin_vel[:, 0])
-    ang_err = torch.square(command_yaw - base_ang_vel[:, 2])
+    upright_sigma = max(float(upright_orientation_sigma), 1.0e-6)
+    lin_err = torch.square(command_vx - tracking_lin_vel_x)
+    ang_err = torch.square(command_yaw - tracking_yaw_rate)
     lin_factor = 2.0 if jump else 1.0
+    tracking_gate = (
+        torch.ones_like(command_vx)
+        if jump
+        else torch.clamp(-projected_gravity[:, 2], min=0.0, max=0.7) / 0.7
+    )
     action_second = actions - 2.0 * previous_actions + before_previous_actions
     pos_limit_penalty = torch.sum(
         torch.clamp(leg_soft_lower - leg_positions, min=0.0)
@@ -149,17 +158,17 @@ def compute_fdu_plane_reward_terms(
         dim=-1,
     )
     return {
-        "tracking_lin_vel": torch.exp(-lin_err / sigma) * lin_factor,
+        "tracking_lin_vel": torch.exp(-lin_err / sigma) * lin_factor * tracking_gate,
         "tracking_lin_vel_enhance": (torch.exp(-lin_err / (10.0 * sigma)) - 1.0) * lin_factor,
-        "tracking_ang_vel": torch.exp(-ang_err / sigma),
+        "tracking_ang_vel": torch.exp(-ang_err / sigma) * tracking_gate,
         "tracking_ang_vel_enhance": torch.exp(-ang_err / (10.0 * sigma)) - 1.0,
         "base_height": torch.exp(-torch.square(observed_height - height_command) / 0.001),
-        # Reward an actually upright base.  Using -gravity_z (instead of only
-        # gravity_xy) keeps an upside-down base from receiving the same reward
-        # as an upright one.  Squaring gives a smooth, bounded [0, 1] signal.
-        "upright_orientation": torch.square(
-            torch.clamp(-projected_gravity[:, 2], min=0.0, max=1.0)
-        ),
+        # Narrow positive upright reward. The xy norm is sin(tilt)^2 for a
+        # normalized gravity vector; the hemisphere gate rejects inverted
+        # poses that otherwise share the same xy projection as upright ones.
+        "upright_orientation": torch.exp(
+            -torch.square(projected_gravity[:, :2]).sum(dim=-1) / upright_sigma
+        ) * (projected_gravity[:, 2] < 0.0).to(projected_gravity.dtype),
         "nominal_state": torch.square(left_theta - right_theta),
         "lin_vel_z": torch.square(base_lin_vel[:, 2]),
         "ang_vel_xy": torch.square(base_ang_vel[:, :2]).sum(dim=-1),
