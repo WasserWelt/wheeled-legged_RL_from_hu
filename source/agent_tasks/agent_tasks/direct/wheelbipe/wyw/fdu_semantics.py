@@ -267,6 +267,34 @@ def update_persistent_condition(
     return updated >= required_steps, updated
 
 
+def compute_fdu_failure_contact_condition(
+    contact_forces: torch.Tensor,
+    threshold: float,
+) -> torch.Tensor:
+    """Return Fudan's per-env rf/lf/base contact failure condition."""
+    if contact_forces.ndim != 3 or contact_forces.shape[-1] != 3:
+        raise ValueError(
+            "failure contact forces must have shape (N,B,3), got "
+            f"{contact_forces.shape}"
+        )
+    return torch.any(torch.linalg.vector_norm(contact_forces, dim=-1) > float(threshold), dim=-1)
+
+
+def compute_fdu_collision_count(
+    contact_forces: torch.Tensor,
+    threshold: float,
+) -> torch.Tensor:
+    """Count mapped Fudan collision bodies above the force threshold per env."""
+    if contact_forces.ndim != 3 or contact_forces.shape[-1] != 3:
+        raise ValueError(
+            "collision contact forces must have shape (N,B,3), got "
+            f"{contact_forces.shape}"
+        )
+    return (
+        torch.linalg.vector_norm(contact_forces, dim=-1) > float(threshold)
+    ).to(dtype=contact_forces.dtype).sum(dim=-1)
+
+
 def sample_uniform_command_from_ranges(
     ranges: torch.Tensor,
     unit_samples: torch.Tensor,
@@ -279,6 +307,47 @@ def sample_uniform_command_from_ranges(
             f"unit samples must have shape {ranges.shape[:-1]}, got {unit_samples.shape}"
         )
     return ranges[:, 0] + unit_samples * (ranges[:, 1] - ranges[:, 0])
+
+
+def compute_fdu_flat_command_curriculum_transition(
+    *,
+    command_ranges_x: torch.Tensor,
+    mean_tracking_lin_rate: torch.Tensor | float,
+    mean_tracking_yaw_rate: torch.Tensor | float,
+    lin_threshold: float,
+    yaw_threshold: float,
+    expansion_step: float,
+    max_abs: float,
+) -> tuple[bool, torch.Tensor]:
+    """Apply Fudan Plane's global vx-range expansion for one curriculum tick."""
+    if command_ranges_x.ndim != 2 or command_ranges_x.shape[-1] != 2:
+        raise ValueError(f"command ranges must have shape (N,2), got {command_ranges_x.shape}")
+    lin_rate = float(torch.as_tensor(mean_tracking_lin_rate).item())
+    yaw_rate = float(torch.as_tensor(mean_tracking_yaw_rate).item())
+    should_expand = lin_rate > float(lin_threshold) and yaw_rate > float(yaw_threshold)
+    updated = command_ranges_x.clone()
+    if should_expand:
+        updated[:, 0] = torch.clamp(
+            updated[:, 0] - float(expansion_step), min=-float(max_abs), max=0.0
+        )
+        updated[:, 1] = torch.clamp(
+            updated[:, 1] + float(expansion_step), min=0.0, max=float(max_abs)
+        )
+    return should_expand, updated
+
+
+def get_due_fdu_flat_command_curriculum_step(
+    *, current_step: int, interval: int, last_consumed_step: int
+) -> int | None:
+    """Return the earliest reached Flat cadence not yet consumed."""
+    if current_step < interval:
+        return None
+    due_step = ((max(last_consumed_step, 0) // interval) + 1) * interval
+    if due_step <= last_consumed_step:
+        return None
+    if due_step > current_step:
+        return None
+    return due_step
 
 
 def compute_fdu_rough_curriculum_transition(

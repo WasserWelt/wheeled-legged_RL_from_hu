@@ -136,13 +136,14 @@ class OnPolicySequenceRunner(OnPolicyRunner):
             else:
                 raise ValueError("Logger type not found. Please choose 'neptune', 'wandb' or 'tensorboard'.")
 
-        # randomize initial episode lengths (for exploration)
+        obs_dict, extras = self.env.reset()
+        # Randomize after reset: DirectRLEnv.reset() clears episode_length_buf.
+        # Fudan's runner uses this ordering so the first rollout is genuinely
+        # staggered instead of synchronizing all episode completions.
         if init_at_random_ep_len:
             self.env.episode_length_buf = torch.randint_like(
                 self.env.episode_length_buf, high=int(self.env.max_episode_length)
             )
-
-        obs_dict, extras = self.env.reset()
         obs_dict = {k: v.to(self.device) for k, v in obs_dict.items()}
         self.alg.policy.train()
 

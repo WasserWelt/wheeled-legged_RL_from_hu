@@ -19,7 +19,7 @@
   ``PPOSequence`` 的 encoder 做隐式线速度监督。
 - ``_get_rewards``：使用独立的 Fudan 精确公式和 term 集合，同时保留基类命令刷新、
   episode logging、数值保护和逐项裁剪契约。
-- ``_get_dones``：使用 Fudan 连续倾倒判定，同时保留数值安全和超时终止。
+- ``_get_dones``：使用 Fudan 接触/倾倒共享的连续失败判定，同时保留数值安全和超时终止。
 
 自维护缓冲（不依赖基类的 obs_history）：
 - ``_wyw_obs_hist``：(N, T=5, 25) 的 fudan policy 历史，滚动写入，供 encoder。
@@ -46,10 +46,14 @@ from .fdu_semantics import (
     build_fdu_critic_observation,
     build_fdu_dr_privilege,
     build_fdu_policy_observation,
+    compute_fdu_collision_count,
     compute_fdu_jump_reward_terms,
     compute_fdu_plane_reward_terms,
+    compute_fdu_failure_contact_condition,
+    compute_fdu_flat_command_curriculum_transition,
     compute_fdu_rough_curriculum_transition,
     filter_fdu_wheel_contacts,
+    get_due_fdu_flat_command_curriculum_step,
     sample_uniform_command_from_ranges,
     update_fdu_observation_history,
 )
@@ -90,16 +94,14 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self._wheel_link_idx = list(self._left_wheel_link_idx) + list(self._right_wheel_link_idx)
         self._wheel_link_count = len(self._wheel_link_idx)
         self._desired_contact_link_idx = self._find_contact_sensor_indices(["[lr]_wheel_Link"])
-        self._reset_contact_link_idx = self._find_contact_sensor_indices(["base_link_del"])
-        if bool(getattr(self.cfg, "wyw_jump_enabled", False)):
-            self._undesired_contact_link_idx = self._find_contact_sensor_indices(
-                ["base_link_del", "[lr]f[01]_Link", "[lr]2[0-3]_Link"]
+        failure_patterns = list(self.cfg.wyw_failure_contact_body_patterns)
+        self._reset_contact_link_idx = self._find_contact_sensor_indices(failure_patterns)
+        if not self._reset_contact_link_idx:
+            raise RuntimeError(
+                "FDU failure/collision contact mapping matched no sensor bodies: "
+                f"patterns={failure_patterns}, available={self.contact_sensor.body_names}"
             )
-        else:
-            # Fudan Plane has penalize_contacts_on=[]; keep the configured
-            # collision reward term for logging compatibility, but its raw
-            # value must remain exactly zero.
-            self._undesired_contact_link_idx = []
+        self._undesired_contact_link_idx = list(self._reset_contact_link_idx)
         self._invalidate_step_caches()
         self.static_priv_obs = self._get_static_priv_obs()
         self._wyw_buffers_ready = False
@@ -183,6 +185,8 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self._wyw_command_ranges_x = torch.tensor(
             self.cfg.commands.ranges.lin_vel_x, dtype=torch.float, device=self.device
         ).repeat(self.num_envs, 1)
+        self._wyw_flat_curriculum_last_step = 0
+        self._wyw_flat_curriculum_pending_log = None
         self._wyw_buffers_ready = True
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
@@ -194,9 +198,13 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             episode_boundary_samples = self._wyw_l0_boundary_episode_samples[reset_env_ids].clone()
             episode_boundary_entries = self._wyw_l0_boundary_episode_entries[reset_env_ids].clone()
             episode_min_l0 = self._wyw_l0_episode_min_m[reset_env_ids].clone()
+        self._update_fdu_flat_command_curriculum(reset_env_ids)
         self._update_fdu_rough_curriculum(reset_env_ids)
         super()._reset_idx(env_ids)
         self._ensure_wyw_buffers()
+        if self._wyw_flat_curriculum_pending_log is not None:
+            self.extras.setdefault("log", {}).update(self._wyw_flat_curriculum_pending_log)
+            self._wyw_flat_curriculum_pending_log = None
         if monitor_ready and reset_env_ids.numel() > 0:
             finite_min = episode_min_l0[torch.isfinite(episode_min_l0)]
             log = self.extras.setdefault("log", {})
@@ -226,8 +234,8 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self._sample_wyw_lin_vel_command(reset_env_ids)
         self._clear_termination_duration_buffers(
             reset_env_ids,
-            counter_attr="_wyw_orientation_termination_counter",
-            raw_attr="_wyw_orientation_termination_raw_buf",
+            counter_attr="_wyw_failure_termination_counter",
+            raw_attr="_wyw_failure_termination_raw_buf",
         )
         # Deliberately do not clear _wyw_base_air_time or the previous-contact
         # filter. The trained Fudan Jump implementation carries both across reset.
@@ -601,8 +609,10 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         if contact_forces is None or not self._undesired_contact_link_idx:
             collision = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         else:
-            selected = contact_forces[:, self._undesired_contact_link_idx]
-            collision = (torch.linalg.vector_norm(selected, dim=-1) > 0.1).float().sum(dim=-1)
+            collision = compute_fdu_collision_count(
+                contact_forces[:, self._undesired_contact_link_idx],
+                float(self.cfg.wyw_collision_contact_force),
+            )
 
         terms = compute_fdu_plane_reward_terms(
             command_vx=self.command[:, 0],
@@ -721,24 +731,81 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         terrain.update_env_origins(env_ids, move_up, move_down)
         self._wyw_command_ranges_x[env_ids] = updated_ranges
 
-    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        """Use Fudan's persisted tilt failure while retaining numerical safety."""
-        _, time_out = super()._get_dones()
-        time_out = time_out | self._get_rough_terrain_boundary_time_out()
-        immediate_terminate = self._numerical_safety_reset_buf.clone()
-        bad_orientation = self.robot.data.projected_gravity_b[:, 2] > -0.1
-        orientation_terminate = self._apply_termination_duration(
-            bad_orientation,
-            counter_attr="_wyw_orientation_termination_counter",
-            raw_attr="_wyw_orientation_termination_raw_buf",
+    def _update_fdu_flat_command_curriculum(self, env_ids: torch.Tensor) -> None:
+        """Consume each reached Fudan Plane vx-curriculum cadence on the next reset."""
+        if not bool(getattr(self.cfg, "wyw_flat_command_curriculum_enabled", False)):
+            return
+        if env_ids.numel() == 0 or not getattr(self, "_wyw_buffers_ready", False):
+            return
+        interval = max(int(self.cfg.wyw_command_curriculum_interval_steps), 1)
+        step = int(getattr(self, "common_step_counter", 0))
+        due_step = get_due_fdu_flat_command_curriculum_step(
+            current_step=step,
+            interval=interval,
+            last_consumed_step=self._wyw_flat_curriculum_last_step,
         )
-        terminate = immediate_terminate | orientation_terminate
+        if due_step is None:
+            return
+        tracking_lin = self._episode_sums.get("tracking_lin_vel")
+        tracking_yaw = self._episode_sums.get("tracking_ang_vel")
+        if tracking_lin is None or tracking_yaw is None:
+            return
+        duration = max(float(self.max_episode_length_s), 1.0e-6)
+        mean_lin_rate = torch.mean(tracking_lin[env_ids]) / duration
+        mean_yaw_rate = torch.mean(tracking_yaw[env_ids]) / duration
+        expanded, updated = compute_fdu_flat_command_curriculum_transition(
+            command_ranges_x=self._wyw_command_ranges_x,
+            mean_tracking_lin_rate=mean_lin_rate,
+            mean_tracking_yaw_rate=mean_yaw_rate,
+            lin_threshold=float(self.cfg.wyw_command_curriculum_lin_threshold),
+            yaw_threshold=float(self.cfg.wyw_command_curriculum_yaw_threshold),
+            expansion_step=float(self.cfg.wyw_command_curriculum_step),
+            max_abs=float(self.cfg.wyw_command_curriculum_max_abs),
+        )
+        self._wyw_command_ranges_x.copy_(updated)
+        self._wyw_flat_curriculum_last_step = due_step
+        self._wyw_flat_curriculum_pending_log = {
+            "Curriculum/FDUFlat/cadence_step": due_step,
+            "Curriculum/FDUFlat/consumed_at_step": step,
+            "Curriculum/FDUFlat/mean_tracking_lin_rate": float(mean_lin_rate.item()),
+            "Curriculum/FDUFlat/mean_tracking_yaw_rate": float(mean_yaw_rate.item()),
+            "Curriculum/FDUFlat/vx_min": float(updated[0, 0].item()),
+            "Curriculum/FDUFlat/vx_max": float(updated[0, 1].item()),
+            "Curriculum/FDUFlat/expanded": int(expanded),
+        }
+
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """Use Fudan's shared persisted contact/tilt failure while retaining numerical safety."""
+        _, time_out = super()._get_dones()
+        boundary_terminate = self._get_rough_terrain_boundary_termination()
+        immediate_terminate = self._numerical_safety_reset_buf.clone()
+        contact_forces = getattr(self.contact_sensor.data, "net_forces_w", None)
+        if contact_forces is None:
+            bad_contact = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        else:
+            bad_contact = compute_fdu_failure_contact_condition(
+                contact_forces[:, self._reset_contact_link_idx],
+                float(self.cfg.wyw_failure_contact_force),
+            )
+        bad_orientation = self.robot.data.projected_gravity_b[:, 2] > -0.1
+        persistent_failure = self._apply_termination_duration(
+            bad_orientation | bad_contact,
+            counter_attr="_wyw_failure_termination_counter",
+            raw_attr="_wyw_failure_termination_raw_buf",
+        )
+        # Fudan resets an out-of-bounds environment immediately and does not
+        # classify that reset as an episode-length timeout. In particular, it
+        # must not enter the one-second contact/tilt persistence counter.
+        terminate = immediate_terminate | persistent_failure | boundary_terminate
         if self.cfg.play is True and not bool(getattr(self.cfg, "play_keep_done_reset", False)):
             terminate.zero_()
         return terminate, time_out
 
-    def _get_rough_terrain_boundary_time_out(self) -> torch.Tensor:
-        """Classify leaving a generated rough tile as timeout, never as failure."""
+    def _get_rough_terrain_boundary_termination(self) -> torch.Tensor:
+        """Return immediate failure termination outside the configured rough terrain area."""
+        cfg = getattr(self.cfg, "rough_terrain_boundary_reset_cfg", {})
+        if not bool(cfg.get("enabled", False)):
+            return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         terrain_cfg = getattr(self.cfg, "terrain", None)
         terrain_gen = getattr(terrain_cfg, "terrain_generator", None)
         if terrain_gen is None or getattr(terrain_cfg, "terrain_type", "plane") == "plane":
@@ -748,14 +815,13 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             return torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         half_x = 0.5 * float(getattr(terrain_gen, "num_rows", 0)) * float(size[0])
         half_y = 0.5 * float(getattr(terrain_gen, "num_cols", 0)) * float(size[1])
-        cfg = getattr(self.cfg, "rough_terrain_boundary_reset_cfg", {})
         if bool(cfg.get("use_inner_terrain_area", False)):
             pass
         else:
             border = float(getattr(terrain_gen, "border_width", 0.0))
             half_x += border
             half_y += border
-        margin = max(float(cfg.get("margin", 0.5)), 0.0)
+        margin = max(float(cfg.get("margin", 1.0)), 0.0)
         half_x = max(half_x - margin, 0.0)
         half_y = max(half_y - margin, 0.0)
         root = self.robot.data.root_pos_w

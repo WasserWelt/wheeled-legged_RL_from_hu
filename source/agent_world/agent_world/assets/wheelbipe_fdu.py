@@ -107,10 +107,9 @@ Wheelbipe_FDU_CFG = ArticulationCfg(
             # training URDF uses 50 N m and overrides this in its env cfg.
             # (The 5/4 N m sim2sim/deployment clamps are a separate stage.)
             effort_limit=5.0,
-            # The Fudan controller has no wheel-speed clamp: it applies a
-            # torque-limited velocity error. 60 rad/s covers its command range
-            # on the 0.06 m wheels while keeping this target-control adapter
-            # bounded. Keep the PhysX limit identical to the runtime clamp.
+            # Conservative P13.71 wheel-output speed cap derived from the
+            # M3508+C620 P19 load curve. Keep the target and PhysX hard limit
+            # aligned so the wheel cannot exceed the chosen operating bound.
             velocity_limit=60.0,
             velocity_limit_sim=60.0,
             armature=0.0,

@@ -301,6 +301,46 @@ def test_persistent_termination_requires_100_consecutive_steps_and_recovers():
     assert done[1] and counter[1] == 101
 
 
+def test_failure_contact_threshold_uses_any_mapped_body_norm():
+    forces = torch.zeros(3, 4, 3)
+    forces[0, 1, 0] = 10.01
+    forces[1, 2] = torch.tensor([6.0, 8.0, 0.0])
+    forces[2, 3, 2] = -11.0
+    failed = S.compute_fdu_failure_contact_condition(forces, threshold=10.0)
+    assert failed.tolist() == [True, False, True]
+    with pytest.raises(ValueError, match="shape"):
+        S.compute_fdu_failure_contact_condition(torch.zeros(3, 4), threshold=10.0)
+
+
+def test_collision_count_uses_each_mapped_body_norm():
+    forces = torch.zeros(3, 4, 3)
+    forces[0, 0, 0] = 0.11
+    forces[0, 1, 1] = -0.2
+    forces[1, 2] = torch.tensor([0.06, 0.08, 0.0])
+    forces[2, 3, 2] = 0.1001
+    counts = S.compute_fdu_collision_count(forces, threshold=0.1)
+    assert counts.tolist() == [2.0, 0.0, 1.0]
+    with pytest.raises(ValueError, match="shape"):
+        S.compute_fdu_collision_count(torch.zeros(3, 4), threshold=0.1)
+
+
+def test_contact_and_tilt_share_one_continuous_failure_counter():
+    counter = torch.zeros(1, dtype=torch.int32)
+    contact_failure = torch.tensor([True])
+    tilt_failure = torch.tensor([False])
+    for step in range(100):
+        # Switching from contact failure to tilt failure must not reset the
+        # shared Fudan fail counter while their union remains continuously true.
+        if step == 50:
+            contact_failure = torch.tensor([False])
+            tilt_failure = torch.tensor([True])
+        done, counter = S.update_persistent_condition(
+            contact_failure | tilt_failure, counter, required_steps=100
+        )
+    assert done.item() is True
+    assert counter.item() == 100
+
+
 def test_command_range_sampling_and_declared_reset_distributions():
     ranges = torch.tensor([[-2.0, 2.0], [-1.0, 1.0], [0.25, 0.75]])
     sampled = S.sample_uniform_command_from_ranges(ranges, torch.tensor([0.0, 0.5, 1.0]))
@@ -317,6 +357,43 @@ def test_command_range_sampling_and_declared_reset_distributions():
     assert all(bounds == (-0.5, 0.5) for bounds in velocity.values())
     assert 5.0 / 0.01 == 500
     assert 20.0 / 0.01 == 2000
+
+
+def test_flat_command_curriculum_thresholds_step_and_cap():
+    ranges = torch.tensor([[-2.0, 2.0], [-2.4, 2.4]])
+    expanded, updated = S.compute_fdu_flat_command_curriculum_transition(
+        command_ranges_x=ranges,
+        mean_tracking_lin_rate=0.71,
+        mean_tracking_yaw_rate=0.57,
+        lin_threshold=0.70,
+        yaw_threshold=0.56,
+        expansion_step=0.1,
+        max_abs=2.5,
+    )
+    assert expanded is True
+    assert torch.allclose(updated, torch.tensor([[-2.1, 2.1], [-2.5, 2.5]]))
+
+    expanded, unchanged = S.compute_fdu_flat_command_curriculum_transition(
+        command_ranges_x=updated,
+        mean_tracking_lin_rate=0.70,
+        mean_tracking_yaw_rate=0.99,
+        lin_threshold=0.70,
+        yaw_threshold=0.56,
+        expansion_step=0.1,
+        max_abs=2.5,
+    )
+    assert expanded is False
+    assert torch.equal(unchanged, updated)
+
+
+def test_flat_command_curriculum_cadence_is_latched_until_a_reset_consumes_it():
+    cadence = S.get_due_fdu_flat_command_curriculum_step
+    assert cadence(current_step=1999, interval=2000, last_consumed_step=0) is None
+    assert cadence(current_step=2000, interval=2000, last_consumed_step=0) == 2000
+    assert cadence(current_step=2173, interval=2000, last_consumed_step=0) == 2000
+    assert cadence(current_step=2173, interval=2000, last_consumed_step=2000) is None
+    assert cadence(current_step=4017, interval=2000, last_consumed_step=2000) == 4000
+    assert cadence(current_step=4017, interval=2000, last_consumed_step=0) == 2000
 
 
 def test_fdu_height_command_range_is_exact_and_uniformly_sampleable():

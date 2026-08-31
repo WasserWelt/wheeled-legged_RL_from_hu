@@ -47,17 +47,16 @@ FDU_PLANE_REWARDS = OrderedDict(
     tracking_lin_vel=1.0,
     tracking_lin_vel_enhance=1.0,
     tracking_ang_vel=1.0,
-    tracking_ang_vel_enhance=1.0,
     base_height=1.0,
     nominal_state=-1.0,
     lin_vel_z=-1.0,
-    ang_vel_xy=-0.20,
-    orientation=-100.0,
+    ang_vel_xy=-0.05,
+    orientation=-15.0,
     dof_vel=-5.0e-5,
-    dof_acc=-2.5e-7,
-    torques=-1.0e-4,
-    action_rate=-0.01,
-    action_smooth=-0.01,
+    dof_acc=-3.0e-7,
+    torques=-1.0e-3,
+    action_rate=-0.3,
+    action_smooth=-0.3,
     collision=-1.0,
     dof_pos_limits=-1.0,
 )
@@ -460,11 +459,32 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     }
     leg_action_scale = 0.5
     wheel_vel_action_scale = 10.0
-    # Adapter limit: covers Fudan's training command range and matches the
-    # FDU asset's wheel velocity_limit_sim. Fudan itself used torque control.
+    # Conservative wheel-output cap for the M3508+C620 with the P13.71
+    # gearbox. It is derived from the P19 load curve, whose speed falls from
+    # 500 rpm at zero load to about 450 rpm at 4.5 N m before ratio conversion.
     max_wheel_vel = 60.0
+    # Persist the active action/reward/termination contract in params/env.yaml
+    # for run auditing. Checkpoint compatibility remains an operator decision.
+    wyw_training_semantics_version = "fdu_flat_p0_direct_bars_v1"
     termination_duration_enabled = True
     termination_duration_steps = 100
+    # Fudan Plane treats all non-wheel leg links plus the base as the
+    # rf/lf/base collision and failure-contact set.
+    wyw_failure_contact_body_patterns = [
+        "base_link_del",
+        "[lr]f[01]_Link",
+        "[lr]2[0-3]_Link",
+    ]
+    wyw_collision_contact_force = 0.1
+    wyw_failure_contact_force = 10.0
+    # Plane command curriculum: at the 20 s global cadence, expand vx by 0.1
+    # after mean linear/yaw tracking rates exceed 0.70/0.56, capped at +/-2.5.
+    wyw_flat_command_curriculum_enabled = True
+    wyw_command_curriculum_interval_steps = 2000
+    wyw_command_curriculum_lin_threshold = 0.7
+    wyw_command_curriculum_yaw_threshold = 0.56
+    wyw_command_curriculum_step = 0.1
+    wyw_command_curriculum_max_abs = 2.5
     clip_single_reward = 1.0
     only_positive_rewards = False
     rewards = copy.deepcopy(FDU_PLANE_REWARDS)
@@ -517,11 +537,12 @@ class WheelbipeWywRoughEnvCfg(WheelbipeWywFlatEnvCfg):
     """wyw Rough：trimesh 地形 + 课程，obs/reward/网络与 Flat 共享。"""
 
     events = FduRoughEventCfg()
+    wyw_flat_command_curriculum_enabled = False
     wyw_rough_curriculum_enabled = True
     rough_terrain_generator_cfg = copy.deepcopy(FDU_ROUGH_TERRAIN_CFG)
     rough_terrain_boundary_reset_cfg = {
         "enabled": True,
-        "margin": 0.5,
+        "margin": 1.0,
         "use_inner_terrain_area": False,
     }
 
@@ -550,6 +571,7 @@ class WheelbipeWywJumpEnvCfg(WheelbipeWywFlatEnvCfg):
     """wyw Jump：平地 + locomotion + fudan 涌现式跳跃奖励（无显式起跳状态机）。"""
 
     wyw_jump_enabled = True
+    wyw_flat_command_curriculum_enabled = False
     events = FduJumpEventCfg()
 
     # fudan jump 变体的 lin_vel obs_scale = 3.0（plane 版为 2.0）。该字段同时驱动
@@ -578,6 +600,7 @@ class WheelbipeWywFlatEnvCfg_Play(WheelbipeWywFlatEnvCfg):
     events = FduPlayEventCfg()
     curriculum = None
     play = True
+    wyw_flat_command_curriculum_enabled = False
     self_obs_noise_cfg = None
 
     def __post_init__(self):
