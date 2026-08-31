@@ -154,6 +154,12 @@ def compute_fdu_plane_reward_terms(
         "tracking_ang_vel": torch.exp(-ang_err / sigma),
         "tracking_ang_vel_enhance": torch.exp(-ang_err / (10.0 * sigma)) - 1.0,
         "base_height": torch.exp(-torch.square(observed_height - height_command) / 0.001),
+        # Reward an actually upright base.  Using -gravity_z (instead of only
+        # gravity_xy) keeps an upside-down base from receiving the same reward
+        # as an upright one.  Squaring gives a smooth, bounded [0, 1] signal.
+        "upright_orientation": torch.square(
+            torch.clamp(-projected_gravity[:, 2], min=0.0, max=1.0)
+        ),
         "nominal_state": torch.square(left_theta - right_theta),
         "lin_vel_z": torch.square(base_lin_vel[:, 2]),
         "ang_vel_xy": torch.square(base_ang_vel[:, :2]).sum(dim=-1),

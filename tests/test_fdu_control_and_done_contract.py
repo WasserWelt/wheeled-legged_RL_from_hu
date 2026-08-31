@@ -161,6 +161,10 @@ def test_wyw_done_reasons_are_latched_and_logged_separately():
 def test_persistent_failure_has_unclipped_terminal_penalty():
     env_cfg_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env_cfg.py"
     tree = ast.parse(env_cfg_path.read_text(encoding="utf-8"))
+    expected_termination = {
+        "FDU_PLANE_REWARDS": -500.0,
+        "FDU_JUMP_REWARDS": -200.0,
+    }
     for rewards_name in ("FDU_PLANE_REWARDS", "FDU_JUMP_REWARDS"):
         assignment = next(
             node
@@ -172,7 +176,7 @@ def test_persistent_failure_has_unclipped_terminal_penalty():
             keyword.arg: ast.literal_eval(keyword.value)
             for keyword in assignment.value.keywords
         }
-        assert values["termination"] == -200.0
+        assert values["termination"] == expected_termination[rewards_name]
 
     env_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env.py"
     env_source = env_path.read_text(encoding="utf-8")

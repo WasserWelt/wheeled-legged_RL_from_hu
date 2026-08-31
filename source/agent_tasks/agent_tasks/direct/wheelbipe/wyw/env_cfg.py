@@ -44,11 +44,12 @@ from .rough_cfg import FDU_ROUGH_TERRAIN_CFG
 
 
 FDU_PLANE_REWARDS = OrderedDict(
-    termination=-200.0,
+    termination=-500.0,
     tracking_lin_vel=1.0,
     tracking_lin_vel_enhance=1.0,
     tracking_ang_vel=1.0,
     base_height=1.0,
+    upright_orientation=1.0,
     nominal_state=-1.0,
     lin_vel_z=-1.0,
     ang_vel_xy=-0.05,

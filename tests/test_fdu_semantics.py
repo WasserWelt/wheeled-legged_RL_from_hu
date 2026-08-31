@@ -142,6 +142,9 @@ def test_plane_raw_reward_formulas_match_fixed_fudan_fixture():
         "tracking_ang_vel": torch.exp(-yaw_err / sigma),
         "tracking_ang_vel_enhance": torch.exp(-yaw_err / sigma / 10) - 1,
         "base_height": torch.exp(-(f["observed_height"] - f["height_command"]).square() / 0.001),
+        "upright_orientation": torch.clamp(
+            -f["projected_gravity"][:, 2], min=0.0, max=1.0
+        ).square(),
         "nominal_state": (f["left_theta"] - f["right_theta"]).square(),
         "lin_vel_z": f["base_lin_vel"][:, 2].square(),
         "ang_vel_xy": f["base_ang_vel"][:, :2].square().sum(-1),
@@ -157,6 +160,18 @@ def test_plane_raw_reward_formulas_match_fixed_fudan_fixture():
     assert set(terms) == set(expected)
     for name, value in expected.items():
         assert torch.allclose(terms[name], value), name
+
+
+def test_upright_orientation_reward_rejects_sideways_and_upside_down_bases():
+    fixture = _reward_fixture()
+    fixture["projected_gravity"] = torch.tensor(
+        [
+            [0.0, 0.0, -1.0],  # upright
+            [0.0, 0.0, 1.0],   # upside down
+        ]
+    )
+    terms = S.compute_fdu_plane_reward_terms(**fixture)
+    assert torch.equal(terms["upright_orientation"], torch.tensor([1.0, 0.0]))
 
 
 def test_jump_shared_and_jump_only_raw_formulas_match_fudan_fixture():
