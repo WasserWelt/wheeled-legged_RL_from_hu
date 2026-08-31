@@ -162,7 +162,10 @@ def compute_fdu_plane_reward_terms(
         "tracking_lin_vel_enhance": (torch.exp(-lin_err / (10.0 * sigma)) - 1.0) * lin_factor,
         "tracking_ang_vel": torch.exp(-ang_err / sigma) * tracking_gate,
         "tracking_ang_vel_enhance": torch.exp(-ang_err / (10.0 * sigma)) - 1.0,
-        "base_height": torch.exp(-torch.square(observed_height - height_command) / 0.001),
+        "base_height": (
+            torch.exp(-torch.square(observed_height - height_command) / 0.001)
+            * tracking_gate
+        ),
         # Narrow positive upright reward. The xy norm is sin(tilt)^2 for a
         # normalized gravity vector; the hemisphere gate rejects inverted
         # poses that otherwise share the same xy projection as upright ones.

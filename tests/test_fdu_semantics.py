@@ -145,7 +145,10 @@ def test_plane_raw_reward_formulas_match_fixed_fudan_fixture():
         "tracking_lin_vel_enhance": torch.exp(-lin_err / sigma / 10) - 1,
         "tracking_ang_vel": torch.exp(-yaw_err / sigma) * tracking_gate,
         "tracking_ang_vel_enhance": torch.exp(-yaw_err / sigma / 10) - 1,
-        "base_height": torch.exp(-(f["observed_height"] - f["height_command"]).square() / 0.001),
+        "base_height": (
+            torch.exp(-(f["observed_height"] - f["height_command"]).square() / 0.001)
+            * tracking_gate
+        ),
         "upright_orientation": torch.exp(
             -f["projected_gravity"][:, :2].square().sum(-1)
             / f["upright_orientation_sigma"]
@@ -197,6 +200,8 @@ def test_plane_tracking_uses_robotlab_gravity_gate_but_negative_enhance_does_not
     fixture["command_yaw"] = torch.zeros(3)
     fixture["tracking_lin_vel_x"] = torch.zeros(3)
     fixture["tracking_yaw_rate"] = torch.zeros(3)
+    fixture["observed_height"] = torch.full((3,), 0.25)
+    fixture["height_command"] = torch.full((3,), 0.25)
     fixture["projected_gravity"] = torch.tensor(
         [
             [0.0, 0.0, -1.0],
@@ -212,6 +217,7 @@ def test_plane_tracking_uses_robotlab_gravity_gate_but_negative_enhance_does_not
     expected_gate = torch.tensor([1.0, 0.5, 0.0])
     assert torch.allclose(terms["tracking_lin_vel"], expected_gate)
     assert torch.allclose(terms["tracking_ang_vel"], expected_gate)
+    assert torch.allclose(terms["base_height"], expected_gate)
     assert torch.equal(terms["tracking_lin_vel_enhance"], torch.zeros(3))
     assert torch.equal(terms["tracking_ang_vel_enhance"], torch.zeros(3))
 

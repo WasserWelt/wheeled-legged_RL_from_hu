@@ -114,7 +114,7 @@ Flat/Rough 的权重（raw term 乘 weight 乘 `step_dt=0.01` 后，再按单项
 | `tracking_lin_vel`          |       1 | 在重力对齐 yaw frame 跟踪 x 向速度；乘 `clamp(-gz,0,0.7)/0.7` 姿态 gate |
 | `tracking_lin_vel_enhance`  |       1 | 更宽容的线速度跟踪塑形；完全跟踪时为 0，有误差时为负 |
 | `tracking_ang_vel`          |       1 | 跟踪世界 z 轴偏航角速度；乘 `clamp(-gz,0,0.7)/0.7` 姿态 gate |
-| `base_height`               |       1 | 跟踪基座高度命令 |
+| `base_height`               |       1 | 跟踪基座高度命令；乘 `clamp(-gz,0,0.7)/0.7` 姿态 gate |
 | `upright_orientation`       |       1 | 正向直立奖励 `exp(-(gx²+gy²)/0.025)`，仅 `gz<0` 生效；10° 约 0.30，侧翻和倒置为 0 |
 | `nominal_state`             |      -1 | 惩罚左右虚拟腿角度 `theta` 不对称 |
 | `lin_vel_z`                 |      -1 | 惩罚基座竖直速度 |
@@ -155,7 +155,8 @@ Jump 不使用 Flat/Rough 的 `base_height`、`upright_orientation`、`lin_vel_z
 
 - 速度跟踪：`exp(-squared_error / 0.25)`；enhance 使用 `exp(-squared_error / 2.5) - 1`。
 - Jump 的线速度跟踪两项额外乘 `2`。
-- 高度：`exp(-square(height - command) / 0.001)`；姿态惩罚为 `gx^2 + gy^2`；独立的窄直立
+- 高度：`exp(-square(height - command) / 0.001) * clamp(-gz,0,0.7)/0.7`；姿态惩罚为
+  `gx^2 + gy^2`；独立的窄直立
   奖励为 `exp(-(gx^2+gy^2)/0.025) * (gz<0)`。Flat/Rough 的正向速度跟踪项另乘
   RobotLab gate：`clamp(-gz, 0, 0.7) / 0.7`。
 - `action_smooth` 使用 `a[t] - 2*a[t-1] + a[t-2]` 的腿部四维。
