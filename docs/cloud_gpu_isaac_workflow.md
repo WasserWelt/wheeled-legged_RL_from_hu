@@ -32,7 +32,7 @@ The source package and the reusable pipeline are
 
 The default pipeline runs 4096 environments for 5000 iterations, waits for
 training to finish, plays the final checkpoint for 1000 steps, validates that a
-non-empty MP4 exists, and then powers off the server:
+non-empty MP4 exists, and records the acceptance result:
 
 ```bash
 cd /root/gpufree-data/wheeled-legged_RL_from_hu
@@ -43,13 +43,6 @@ bash scripts/cloud/fdu_flat_train_pipeline.sh start \
   --run-name flat_500hz_height015_030_4096_iter5000
 ```
 
-Use `--no-shutdown` when debugging the play stage. The shutdown is requested
-only after `play.py` exits successfully and a non-zero-size MP4 is found. The
-default command is `shutdown -h now`; an image-specific command can be supplied
-with `--shutdown-command '...'`. The command output is recorded, and a reported
-missing shutdown key is treated as a failed shutdown rather than silently
-claiming success.
-
 The pipeline records these artifacts under `logs/cloud/`:
 
 - `<run>.train.log`, `<run>.train.pid`: training output and PID.
@@ -57,9 +50,6 @@ The pipeline records these artifacts under `logs/cloud/`:
 - `<run>.play_runtime.log`: play output.
 - `<run>.play_video.txt`: absolute path of the retained MP4.
 - `<run>.play.complete`: acceptance completed successfully.
-- `<run>.shutdown_requested`: shutdown command was issued.
-- `<run>.shutdown_command.log`: stdout/stderr from the shutdown command.
-- `<run>.shutdown_accepted` or `<run>.shutdown_failed`: command result.
 
 The model directory is under
 `logs/rsl_rl/wheelbipe_fdu_wyw_flat_direct/<timestamp>_<run-name>/`; the final
@@ -76,6 +66,5 @@ ssh gpu_isaac 'ps -p $(cat /root/gpufree-data/wheeled-legged_RL_from_hu/logs/clo
 ssh gpu_isaac 'tail -f /root/gpufree-data/wheeled-legged_RL_from_hu/logs/cloud/flat_500hz_height015_030_4096_iter5000.train.log'
 ```
 
-Do not start a second watcher for the same training PID. If a post-play run
-must be debugged without shutdown, start `watch` manually with
-`--no-shutdown` after stopping the old watcher.
+Do not start a second watcher for the same training PID. To debug a post-play
+run, stop the old watcher before starting `watch` manually.

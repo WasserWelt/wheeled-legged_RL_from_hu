@@ -14,7 +14,6 @@ DEFAULT_NUM_ENVS=4096
 DEFAULT_MAX_ITERATIONS=5000
 DEFAULT_SEED=42
 DEFAULT_VIDEO_LENGTH=1000
-DEFAULT_SHUTDOWN_COMMAND="shutdown -h now"
 
 usage() {
     cat <<'EOF'
@@ -30,8 +29,6 @@ start options:
   --max-iterations N       PPO iterations (default: 5000)
   --seed N                 Random seed (default: 42)
   --run-name NAME          Log directory suffix
-  --shutdown-command CMD   Command run after a successful play (default: shutdown -h now)
-  --no-shutdown            Keep the server on after post-training play
 
 watch options:
   --repo PATH              Repository root on gpu_isaac
@@ -41,8 +38,6 @@ watch options:
   --play-task TASK         Play task id
   --run-name NAME          Log directory suffix
   --video-length N         Number of play steps to record (default: 1000)
-  --shutdown-command CMD   Command run after a successful play (default: shutdown -h now)
-  --no-shutdown            Do not power off after a successful video
 EOF
 }
 
@@ -76,8 +71,6 @@ watch_pipeline() {
     local play_task="$5"
     local run_name="$6"
     local video_length="$7"
-    local shutdown_after="$8"
-    local shutdown_command="$9"
     local run_root="$repo/logs/rsl_rl/wheelbipe_fdu_wyw_flat_direct"
     local artifact_prefix="$repo/logs/cloud/${run_name}"
     local play_runtime_log="${artifact_prefix}.play_runtime.log"
@@ -114,7 +107,7 @@ watch_pipeline() {
     local play_status=$?
     set -e
     log "play_exit=${play_status}"
-    [[ "$play_status" -eq 0 ]] || die "post-training play failed; server will remain on"
+    [[ "$play_status" -eq 0 ]] || die "post-training play failed"
 
     local video_path
     video_path="$(find "$run_dir/videos/play" -type f -name "*.mp4" -size +0c -printf "%T@ %p\n" \
@@ -123,30 +116,6 @@ watch_pipeline() {
     printf '%s\n' "$video_path" > "${artifact_prefix}.play_video.txt"
     touch "${artifact_prefix}.play.complete"
     log "video=${video_path}"
-
-    if [[ "$shutdown_after" == "1" ]]; then
-        touch "${artifact_prefix}.shutdown_requested"
-        log "post-training play succeeded; requesting server shutdown"
-        local shutdown_log="${artifact_prefix}.shutdown_command.log"
-        local shutdown_output
-        set +e
-        shutdown_output="$(bash -lc "$shutdown_command" 2>&1)"
-        local shutdown_status=$?
-        set -e
-        printf '%s\n' "$shutdown_output" > "$shutdown_log"
-        [[ -z "$shutdown_output" ]] || log "shutdown_output=${shutdown_output//$'\n'/; }"
-        if [[ "$shutdown_status" -ne 0 ]]; then
-            touch "${artifact_prefix}.shutdown_failed"
-            die "shutdown command failed (status=${shutdown_status}); server will remain on"
-        fi
-        if grep -Eiq '未设置关机密钥|shutdown key.*(not set|missing)|key.*(not set|missing)' "$shutdown_log"; then
-            touch "${artifact_prefix}.shutdown_failed"
-            die "shutdown command reported a missing key; server will remain on"
-        fi
-        touch "${artifact_prefix}.shutdown_accepted"
-    else
-        log "shutdown disabled by --no-shutdown"
-    fi
 }
 
 start_pipeline() {
@@ -157,8 +126,6 @@ start_pipeline() {
     local max_iterations="$DEFAULT_MAX_ITERATIONS"
     local seed="$DEFAULT_SEED"
     local run_name="flat_500hz_height015_030_4096_iter5000"
-    local shutdown_command="$DEFAULT_SHUTDOWN_COMMAND"
-    local shutdown_after=1
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -169,8 +136,6 @@ start_pipeline() {
             --max-iterations) max_iterations="$2"; shift 2 ;;
             --seed) seed="$2"; shift 2 ;;
             --run-name) run_name="$2"; shift 2 ;;
-            --shutdown-command) shutdown_command="$2"; shift 2 ;;
-            --no-shutdown) shutdown_after=0; shift ;;
             -h|--help) usage; return 0 ;;
             *) die "unknown start option: $1" ;;
         esac
@@ -206,10 +171,8 @@ start_pipeline() {
         --task "$task" \
         --play-task "$DEFAULT_PLAY_TASK" \
         --run-name "$run_name" \
-        --video-length "$DEFAULT_VIDEO_LENGTH" \
-        --shutdown-command "$shutdown_command"
+        --video-length "$DEFAULT_VIDEO_LENGTH"
     )
-    [[ "$shutdown_after" == "1" ]] || watch_args+=(--no-shutdown)
     nohup "$SCRIPT_PATH" "${watch_args[@]}" > "$watch_log" 2>&1 < /dev/null &
     local watcher_pid=$!
     printf '%s\n' "$watcher_pid" > "$repo/logs/cloud/${run_name}.watch.pid"
@@ -225,8 +188,6 @@ watch_command() {
     local play_task="$DEFAULT_PLAY_TASK"
     local run_name="flat_500hz_height015_030_4096_iter5000"
     local video_length="$DEFAULT_VIDEO_LENGTH"
-    local shutdown_command="$DEFAULT_SHUTDOWN_COMMAND"
-    local shutdown_after=1
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -237,15 +198,13 @@ watch_command() {
             --play-task) play_task="$2"; shift 2 ;;
             --run-name) run_name="$2"; shift 2 ;;
             --video-length) video_length="$2"; shift 2 ;;
-            --shutdown-command) shutdown_command="$2"; shift 2 ;;
-            --no-shutdown) shutdown_after=0; shift ;;
             -h|--help) usage; return 0 ;;
             *) die "unknown watch option: $1" ;;
         esac
     done
 
     [[ -n "$train_pid" ]] || die "--train-pid is required for watch"
-    watch_pipeline "$repo" "$python" "$train_pid" "$task" "$play_task" "$run_name" "$video_length" "$shutdown_after" "$shutdown_command"
+    watch_pipeline "$repo" "$python" "$train_pid" "$task" "$play_task" "$run_name" "$video_length"
 }
 
 command="${1:-}"
