@@ -36,8 +36,6 @@ from isaaclab.utils.noise import NoiseModelCfg, UniformNoiseCfg
 import agent_tasks.manager.mdp.isaaclab as mdp
 from agent_tasks.direct.wheelbipe.wheelbipe25_v3.env_cfg import Wheelbipe25v3FlatEnvCfg, EventCfg
 from agent_world.assets.wheelbipe_fdu import Wheelbipe_FDU_CFG
-from agent_world import AssetPath
-
 from . import wyw_constants as C
 from .fdu_mapping import POLICY_JOINT_NAMES
 from .rough_cfg import FDU_ROUGH_TERRAIN_CFG
@@ -57,8 +55,8 @@ FDU_PLANE_REWARDS = OrderedDict(
     dof_vel=-5.0e-5,
     dof_acc=-3.0e-7,
     torques=-1.0e-3,
-    action_rate=-0.3,
-    action_smooth=-0.3,
+    action_rate=-0.03,
+    action_smooth=-0.03,
     collision=-1.0,
     dof_pos_limits=-1.0,
 )
@@ -260,9 +258,6 @@ def _apply_wyw_common(cfg) -> None:
     # This is a task command/reward range; physical entity targets remain
     # independently projected into the calibrated L0/theta0 workspace.
     cfg.height_range = [0.15, 0.30]
-    if cfg.terrain.terrain_type == "plane":
-        cfg.terrain.terrain_type = "usd"
-        cfg.terrain.usd_path = f"{AssetPath}/usd_files/flat_ground.usda"
 
 
 @configclass
@@ -453,6 +448,7 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     use_predefined_leg_random_start = False
     use_obs_delay = False
     use_act_delay = False
+    default_height_cmd = 0.22
     self_obs_noise_cfg = {
         "root_ang_vel_b": NoiseModelCfg(noise_cfg=UniformNoiseCfg(n_min=-0.2, n_max=0.2)),
         "projected_gravity_b": NoiseModelCfg(noise_cfg=UniformNoiseCfg(n_min=-0.05, n_max=0.05)),
@@ -461,7 +457,7 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
         "wheel_joint_vel": NoiseModelCfg(noise_cfg=UniformNoiseCfg(n_min=-1.5, n_max=1.5)),
     }
     leg_action_scale = 0.5
-    wheel_vel_action_scale = 10.0
+    wheel_vel_action_scale = 60.0 #10.0
     # Conservative wheel-output cap for the M3508+C620 with the P13.71
     # gearbox. It is derived from the P19 load curve, whose speed falls from
     # 500 rpm at zero load to about 450 rpm at 4.5 N m before ratio conversion.
