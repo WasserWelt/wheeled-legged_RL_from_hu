@@ -173,6 +173,7 @@ class SequencePPORunnerCfg(RslRlOnPolicyRunnerCfg):
 class WheelbipeWywPPORunnerCfg(SequencePPORunnerCfg):
     """wyw 共享 runner（Flat 用）。三任务共享 Actor/Critic/PPO 超参，仅 experiment_name 分开。"""
 
+    save_interval = 200
     experiment_name = "wheelbipe_fdu_wyw_flat_direct"
     # Bound the Gaussian policy before the environment maps leg actions to
     # position targets.  This prevents rare samples from driving the closed

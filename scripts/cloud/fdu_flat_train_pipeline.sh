@@ -16,7 +16,7 @@ DEFAULT_PLAY_TASK="Robotics-Wheelbipe-FDU-wyw-Flat-Play-v1"
 DEFAULT_NUM_ENVS=4096
 DEFAULT_MAX_ITERATIONS=5000
 DEFAULT_SEED=42
-DEFAULT_CHECKPOINT_INTERVAL=500
+DEFAULT_CHECKPOINT_INTERVAL=200
 DEFAULT_STEPS_PER_ITERATION=48
 DEFAULT_CHECKPOINT_VIDEO_LENGTH=200
 DEFAULT_FINAL_VIDEO_LENGTH=1000
@@ -39,7 +39,7 @@ start options:
   --max-iterations N       PPO iterations (default: 5000)
   --seed N                 Random seed (default: 42)
   --run-name NAME          Log directory suffix
-  --checkpoint-interval N  Iterations between checkpoints (default: 500)
+  --checkpoint-interval N  Iterations between checkpoints (default: 200)
   --checkpoint-video-length N
                            Steps per training video (default: 200)
   --checkpoint-video-interval N

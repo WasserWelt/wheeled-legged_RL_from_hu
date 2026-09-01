@@ -33,8 +33,8 @@ The source package and the reusable pipeline are
 The default pipeline runs 4096 environments for 5000 iterations, waits for
 training to finish, plays the final checkpoint for 1000 steps, validates that a
 non-empty MP4 exists, and records the acceptance result. It also uses Isaac's
-native training video support to record 200 steps at every 500-iteration
-checkpoint interval (500 x 48 environment steps = 24000):
+native training video support to record 200 steps at every 200-iteration
+checkpoint interval (200 x 48 environment steps = 9600):
 
 ```bash
 cd /root/gpufree-data/wheeled-legged_RL_from_hu

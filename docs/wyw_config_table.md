@@ -220,7 +220,7 @@ Jump 另行放宽 runner 动作裁剪范围：
 | runner / policy / algorithm             | `OnPolicySequenceRunner` / `ActorCriticSequence` / `PPOSequence` |
 | rollout                                 | `48` steps/env                                                       |
 | source runner`max_iterations`         | `20000`                                                              |
-| save interval                           | `500`                                                                |
+| save interval                           | `200`                                                                |
 | actor / critic / encoder                | `[128,64,32]` / `[256,128,64]` / `[128,64]`                      |
 | latent / activation / init std          | `3` / ELU / `0.5`                                                  |
 | orthogonal init                         | `False`                                                              |
