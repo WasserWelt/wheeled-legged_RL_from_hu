@@ -32,11 +32,14 @@ The source package and the reusable pipeline are
 
 The default pipeline runs 4096 environments for 5000 iterations, waits for
 training to finish, plays the final checkpoint for 1000 steps, validates that a
-non-empty MP4 exists, and records the acceptance result:
+non-empty MP4 exists, and records the acceptance result. It also uses Isaac's
+native training video support to record 200 steps at every 500-iteration
+checkpoint interval (500 x 48 environment steps = 24000):
 
 ```bash
 cd /root/gpufree-data/wheeled-legged_RL_from_hu
 bash scripts/cloud/fdu_flat_train_pipeline.sh start \
+  --profile gpu-isaac \
   --num-envs 4096 \
   --max-iterations 5000 \
   --seed 42 \
@@ -54,7 +57,9 @@ The pipeline records these artifacts under `logs/cloud/`:
 The model directory is under
 `logs/rsl_rl/wheelbipe_fdu_wyw_flat_direct/<timestamp>_<run-name>/`; the final
 checkpoint is selected by numeric `model_*.pt` order. The video is under that
-directory's `videos/play/` folder.
+directory's `videos/play/` folder. Videos recorded during training are under
+`videos/train/`; their step numbers correspond to the 48 environment steps per
+WYW learning iteration.
 
 ## Reattach an existing run
 

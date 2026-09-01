@@ -38,6 +38,14 @@ parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument(
+    "--log_root",
+    "--log-root",
+    dest="log_root",
+    type=str,
+    default=None,
+    help="Base directory for RSL-RL experiment folders (default: ./logs/rsl_rl).",
+)
+parser.add_argument(
     "--resume_training",
     action="store_true",
     default=False,
@@ -208,7 +216,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg.seed = seed
 
     # specify directory for logging experiments
-    log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
+    log_base_path = args_cli.log_root or os.path.join("logs", "rsl_rl")
+    log_root_path = os.path.join(log_base_path, agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     print(f"[INFO] Logging experiment in directory: {log_root_path}")
     # specify directory for logging runs: {time-stamp}_{run_name}

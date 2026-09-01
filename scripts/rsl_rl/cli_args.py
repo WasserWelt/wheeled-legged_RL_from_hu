@@ -33,6 +33,12 @@ def add_rsl_rl_args(parser: argparse.ArgumentParser):
         "--experiment_name", type=str, default=None, help="Name of the experiment folder where logs will be stored."
     )
     arg_group.add_argument("--run_name", type=str, default=None, help="Run name suffix to the log directory.")
+    arg_group.add_argument(
+        "--save_interval",
+        type=int,
+        default=None,
+        help="Number of learning iterations between checkpoints.",
+    )
     # -- load arguments
     # NOTE: `--resume` and `--load_run` are placeholders for compatibility with
     # external orchestration scripts. They are intentionally not wired to any
@@ -138,6 +144,10 @@ def update_rsl_rl_cfg(agent_cfg: RslRlOnPolicyRunnerCfg, args_cli: argparse.Name
         agent_cfg.seed = args_cli.seed
     if args_cli.run_name is not None:
         agent_cfg.run_name = args_cli.run_name
+    if args_cli.save_interval is not None:
+        if args_cli.save_interval <= 0:
+            raise ValueError("--save_interval must be positive")
+        agent_cfg.save_interval = args_cli.save_interval
     clip_actions = getattr(args_cli, "clip_actions", None)
     if clip_actions is not None:
         agent_cfg.clip_actions = clip_actions
