@@ -75,7 +75,7 @@ runner 侧 Flat/Rough 将策略动作裁剪到 `[-1,1]`；Jump 为兼容既有 F
 | `vx`                                       | 初始 `[-0.5, 0.5] m/s`       | `[-2.1, 2.1] m/s`            |
 | `vy`                                       | `[0, 0] m/s`                 | `[0, 0] m/s`                 |
 | yaw rate                                     | `[-2.0, 2.0] rad/s`          | `[-2.0, 2.0] rad/s`          |
-| 高度命令                                     | `[0.15, 0.30] m`             | `[0.15, 0.30] m`             |
+| 高度命令                                     | 默认 `0.22 m`，范围 `[0.15, 0.30] m` | 默认 `0.22 m`，范围 `[0.15, 0.30] m` |
 | resampling period                            | `5 s`                        | `20 s`                       |
 | heading command                              | `False`（直接采样 yaw rate） | `False`（直接采样 yaw rate） |
 | `rel_heading_envs` / `rel_standing_envs` | `0 / 0`                      | `0 / 0`                      |

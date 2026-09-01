@@ -31,3 +31,7 @@ PYTHONPATH="$PWD${PYTHONPATH:+:$PYTHONPATH}" \
   --seed=42 \
   --device=cuda:0 \
   --run_name=flat_p0_8192_iter5000
+
+
+# 上传公钥
+ssh-copy-id -i ~/.ssh/id_ed25519_cloud_gpu.pub -p 31360 root@183.147.142.40

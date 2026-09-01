@@ -64,6 +64,14 @@ def test_wyw_wheel_pd_path_and_p13_71_speed_cap():
     assert math.isclose(p13_loaded_torque, 3.2471052631578947)
 
 
+def test_wyw_default_height_command_matches_documented_value():
+    env_cfg_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env_cfg.py"
+    default_height = _class_assignment(
+        env_cfg_path, "WheelbipeWywFlatEnvCfg", "default_height_cmd"
+    )
+    assert default_height == 0.22
+
+
 def test_wheel_asset_keeps_p13_71_conservative_velocity_limit():
     asset_path = ROOT / "source/agent_world/agent_world/assets/wheelbipe_fdu.py"
     tree = ast.parse(asset_path.read_text(encoding="utf-8"))
@@ -140,6 +148,43 @@ def test_rough_boundary_is_immediate_termination_not_timeout():
         )
         for node in ast.walk(get_dones)
     )
+
+
+def test_flat_keeps_inherited_plane_and_rough_keeps_generator():
+    env_cfg_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env_cfg.py"
+    tree = ast.parse(env_cfg_path.read_text(encoding="utf-8"))
+
+    common_helper = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_apply_wyw_common"
+    )
+    common_source = ast.unparse(common_helper)
+    assert "terrain_type" not in common_source
+    assert "flat_ground.usda" not in common_source
+
+    rough_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "WheelbipeWywRoughEnvCfg"
+    )
+    rough_post_init = next(
+        node
+        for node in rough_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "__post_init__"
+    )
+    terrain_type_assignments = [
+        node
+        for node in rough_post_init.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Attribute)
+            and target.attr == "terrain_type"
+            for target in node.targets
+        )
+    ]
+    assert len(terrain_type_assignments) == 1
+    assert ast.literal_eval(terrain_type_assignments[0].value) == "generator"
 
 
 def test_wyw_done_reasons_are_latched_and_logged_separately():
