@@ -54,6 +54,23 @@ bash scripts/cloud/lab_3090_server_setup.sh verify
 
 ## 检查 GPU 并启动训练
 
+启动训练前，先在本机仓库根目录执行只读同步检查：
+
+```bash
+bash scripts/cloud/lab_3090_server_setup.sh check-sync
+```
+
+该命令按文件内容校验本机和服务器源码，并同时报告服务器上多出的源码文件。它不会写入或删除任何文件。若检查失败，先查看差异；本地新增或修改的内容可执行：
+
+```bash
+bash scripts/cloud/lab_3090_server_setup.sh sync
+bash scripts/cloud/lab_3090_server_setup.sh check-sync
+```
+
+`sync` 不会删除服务器独有文件；如果复查仍显示 `*deleting`，需要先确认该远端文件是否应保留，再显式处理。
+
+`check-sync` 和 `sync` 都忽略 `.git`、日志、Hydra `outputs`、Python/测试缓存及 editable 安装生成的 `egg-info`。
+
 先查看两张卡及使用进程：
 
 ```bash

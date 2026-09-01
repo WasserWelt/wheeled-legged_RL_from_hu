@@ -22,6 +22,7 @@ usage() {
     cat <<'EOF'
 Usage:
   lab_3090_server_setup.sh doctor [options]
+  lab_3090_server_setup.sh check-sync [options]
   lab_3090_server_setup.sh pack --archive PATH [options]
   lab_3090_server_setup.sh sync [options]
   lab_3090_server_setup.sh install --archive PATH [options]
@@ -30,6 +31,7 @@ Usage:
 
 Commands:
   doctor      Show remote OS, disks, NVIDIA GPUs, GPU processes, and Conda.
+  check-sync  Compare local and remote source content without changing either side.
   pack        Pack the local Isaac Lab Conda environment. Reuses an existing archive.
   sync        Synchronize source code to /home without logs or Git metadata.
   install     Upload and unpack the environment, then install editable project packages.
@@ -49,6 +51,18 @@ Options:
   --ignore-missing-files   Allow known Conda/pip metadata drift while packing
 EOF
 }
+
+RSYNC_SOURCE_FILTERS=(
+    --exclude '/.git/'
+    --exclude '/logs/'
+    --exclude '/outputs/'
+    --exclude '/.pytest_cache/'
+    --exclude '/.mypy_cache/'
+    --exclude '/.ruff_cache/'
+    --exclude '**/__pycache__/'
+    --exclude '*.pyc'
+    --exclude '*.egg-info/'
+)
 
 die() {
     echo "[LAB-3090-SETUP] ERROR: $*" >&2
@@ -148,11 +162,28 @@ sync_repository() {
     ssh "$SSH_HOST" mkdir -p "$REMOTE_REPO" "$REMOTE_DATA_ROOT"
     log "syncing source to ${SSH_HOST}:${REMOTE_REPO}"
     rsync -az --info=progress2 \
-        --exclude '/.git/' \
-        --exclude '/logs/' \
-        --exclude '**/__pycache__/' \
-        --exclude '*.pyc' \
+        "${RSYNC_SOURCE_FILTERS[@]}" \
         "$LOCAL_REPO/" "$SSH_HOST:$REMOTE_REPO/"
+}
+
+check_repository_sync() {
+    [[ -d "$LOCAL_REPO" ]] || die "local repository does not exist: $LOCAL_REPO"
+    log "checking source content against ${SSH_HOST}:${REMOTE_REPO}"
+
+    local changes status
+    set +e
+    changes="$(rsync -rlnc --delete --itemize-changes \
+        "${RSYNC_SOURCE_FILTERS[@]}" \
+        "$LOCAL_REPO/" "$SSH_HOST:$REMOTE_REPO/" 2>&1)"
+    status=$?
+    set -e
+    [[ "$status" -eq 0 ]] || die "source comparison failed: $changes"
+
+    if [[ -n "${changes//[[:space:]]/}" ]]; then
+        echo "$changes"
+        die "local and remote source differ; review the list, use '$0 sync' for local changes, and resolve remote-only files explicitly"
+    fi
+    log "source content is synchronized"
 }
 
 install_environment() {
@@ -283,6 +314,7 @@ validate_remote_settings
 
 case "$command" in
     doctor) doctor ;;
+    check-sync) check_repository_sync ;;
     pack) pack_environment ;;
     sync) sync_repository ;;
     install) install_environment ;;
@@ -295,5 +327,5 @@ case "$command" in
         verify_environment
         ;;
     -h|--help) usage ;;
-    *) die "expected doctor, pack, sync, install, verify, or bootstrap (got: ${command})" ;;
+    *) die "expected doctor, check-sync, pack, sync, install, verify, or bootstrap (got: ${command})" ;;
 esac
