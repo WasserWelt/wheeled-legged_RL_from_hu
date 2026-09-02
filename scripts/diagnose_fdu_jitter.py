@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import time
 from pathlib import Path
 
 from isaaclab.app import AppLauncher
@@ -28,6 +29,12 @@ parser.add_argument("--lengths", type=float, nargs="+", default=(0.10, 0.20, 0.2
 parser.add_argument("--ramp-steps", type=int, default=300)
 parser.add_argument("--settle-steps", type=int, default=300)
 parser.add_argument("--sample-steps", type=int, default=400)
+parser.add_argument(
+    "--benchmark-steps",
+    type=int,
+    default=0,
+    help="optional target-hold steps timed after diagnostics; excludes Isaac Sim startup",
+)
 parser.add_argument("--dt", type=float, default=0.005)
 parser.add_argument("--velocity-iterations", type=int, default=6)
 parser.add_argument("--position-iterations", type=int, default=16)
@@ -94,6 +101,8 @@ def _loop_gaps(robot: Articulation, anchors) -> torch.Tensor:
 def main() -> None:
     if min(args_cli.ramp_steps, args_cli.settle_steps, args_cli.sample_steps) < 1:
         raise ValueError("ramp, settle and sample steps must all be positive")
+    if args_cli.benchmark_steps < 0:
+        raise ValueError("--benchmark-steps must be non-negative")
     sim_dt = float(args_cli.dt)
     if sim_dt <= 0.0:
         raise ValueError("--dt must be positive")
@@ -213,6 +222,25 @@ def main() -> None:
             "loop_gap_max_mm": 1000.0 * float(torch.max(loop_gap_t)),
         })
 
+    performance = None
+    if args_cli.benchmark_steps:
+        if str(robot.device).startswith("cuda"):
+            torch.cuda.synchronize(robot.device)
+        benchmark_start = time.perf_counter()
+        for _ in range(args_cli.benchmark_steps):
+            robot.write_data_to_sim()
+            sim.step(render=False)
+            robot.update(sim_dt)
+        if str(robot.device).startswith("cuda"):
+            torch.cuda.synchronize(robot.device)
+        benchmark_elapsed = time.perf_counter() - benchmark_start
+        performance = {
+            "benchmark_steps": args_cli.benchmark_steps,
+            "elapsed_s": benchmark_elapsed,
+            "physics_steps_per_s": args_cli.benchmark_steps / benchmark_elapsed,
+            "realtime_factor": args_cli.benchmark_steps * sim_dt / benchmark_elapsed,
+        }
+
     report = {
         "physics": {
             "usd": str(Path(args_cli.usd).resolve()) if args_cli.usd else "project default",
@@ -228,6 +256,7 @@ def main() -> None:
             "drive_effort_limit": args_cli.drive_effort_limit,
             "passive_damping": args_cli.passive_damping,
         },
+        "performance": performance,
         "samples": rows,
     }
     output = Path(args_cli.output)
