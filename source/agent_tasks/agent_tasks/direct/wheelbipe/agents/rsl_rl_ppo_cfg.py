@@ -175,10 +175,9 @@ class WheelbipeWywPPORunnerCfg(SequencePPORunnerCfg):
 
     save_interval = 200
     experiment_name = "wheelbipe_fdu_wyw_flat_direct"
-    # Bound the Gaussian policy before the environment maps leg actions to
-    # position targets.  This prevents rare samples from driving the closed
-    # linkage far outside its calibrated workspace.
-    clip_actions = 1.0
+    # Keep the policy-action envelope consistent with the Fudan training setup;
+    # actuator targets are still bounded by the environment's physical limits.
+    clip_actions = 100.0
     algorithm = {
         **SEQUENCE_PPO_ALGORITHM_CFG,
         "extra_learning_rate": 1.0e-4,
