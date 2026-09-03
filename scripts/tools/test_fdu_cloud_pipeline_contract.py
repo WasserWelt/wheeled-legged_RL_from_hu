@@ -156,6 +156,8 @@ def test_lab_setup_has_read_only_content_sync_check():
     assert "check-sync) check_repository_sync" in source
     assert "rsync -rlnc --delete --itemize-changes" in source
     assert '"${RSYNC_SOURCE_FILTERS[@]}"' in source
+    assert "--exclude '/docs/'" in source
+    assert "--exclude '/pretrained/'" in source
     assert "source content is synchronized" in source
 
 

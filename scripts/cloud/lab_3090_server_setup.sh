@@ -33,7 +33,7 @@ Commands:
   doctor      Show remote OS, disks, NVIDIA GPUs, GPU processes, and Conda.
   check-sync  Compare local and remote source content without changing either side.
   pack        Pack the local Isaac Lab Conda environment. Reuses an existing archive.
-  sync        Synchronize source code to /home without logs or Git metadata.
+  sync        Synchronize source code to /home using the shared exclusion list.
   install     Upload and unpack the environment, then install editable project packages.
   verify      Verify remote Python imports and show the installed versions.
   bootstrap   Run doctor, pack, sync, install, and verify in order.
@@ -54,8 +54,10 @@ EOF
 
 RSYNC_SOURCE_FILTERS=(
     --exclude '/.git/'
+    --exclude '/docs/'
     --exclude '/logs/'
     --exclude '/outputs/'
+    --exclude '/pretrained/'
     --exclude '/.pytest_cache/'
     --exclude '/.mypy_cache/'
     --exclude '/.ruff_cache/'

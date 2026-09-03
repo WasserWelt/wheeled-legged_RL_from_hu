@@ -69,7 +69,7 @@ bash scripts/cloud/lab_3090_server_setup.sh check-sync
 
 `sync` 不会删除服务器独有文件；如果复查仍显示 `*deleting`，需要先确认该远端文件是否应保留，再显式处理。
 
-`check-sync` 和 `sync` 都忽略 `.git`、日志、Hydra `outputs`、Python/测试缓存及 editable 安装生成的 `egg-info`。
+`check-sync` 和 `sync` 共用同一组过滤规则，都会忽略仓库根目录的 `docs/`、`pretrained/`、`.git/`、日志、Hydra `outputs`、Python/测试缓存及 editable 安装生成的 `egg-info`。被排除的远端目录不会被差异检查报告，也不会在 `sync` 时上传、覆盖或删除。
 
 登录服务器并启动：
 
