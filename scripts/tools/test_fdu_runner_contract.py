@@ -105,7 +105,7 @@ def test_sequence_encoder_receives_done_mask_and_emits_distribution_diagnostics(
     assert "dones_batch" in storage_source
 
 
-def test_wyw_runner_starts_with_bounded_actions_and_robust_encoder():
+def test_wyw_runner_uses_wide_action_clip_and_robust_encoder():
     path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/agents/rsl_rl_ppo_cfg.py"
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -120,7 +120,7 @@ def test_wyw_runner_starts_with_bounded_actions_and_robust_encoder():
         if isinstance(node, ast.Assign)
         and any(isinstance(target, ast.Name) and target.id == "clip_actions" for target in node.targets)
     )
-    assert ast.literal_eval(clip.value) == 1.0
+    assert ast.literal_eval(clip.value) == 100.0
     assert '"extra_learning_rate": 1.0e-4' in source
     assert '"encoder_loss": "smooth_l1"' in source
     assert '"encoder_exclude_terminal": True' in source

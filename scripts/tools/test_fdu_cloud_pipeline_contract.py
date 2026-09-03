@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import ast
+import os
 from pathlib import Path
 import subprocess
 
 
-ROOT = Path(__file__).parents[1]
+ROOT = Path(__file__).parents[2]
 PIPELINE = ROOT / "scripts/cloud/fdu_flat_train_pipeline.sh"
 SETUP = ROOT / "scripts/cloud/lab_3090_server_setup.sh"
 WORKFLOW_DOCS = (
@@ -35,6 +36,92 @@ def test_pipeline_checks_and_scopes_the_selected_gpu():
     assert 'CUDA_VISIBLE_DEVICES="$gpu"' in source
     assert 'gpu="$(resolve_gpu "$gpu")"' in source
     assert 'require_free_gpu "$gpu"' in source
+
+
+def run_auto_gpu_start(tmp_path, *, gpu1_process):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_nvidia_smi = bin_dir / "nvidia-smi"
+    fake_nvidia_smi.write_text(
+        """#!/usr/bin/env bash
+case "$*" in
+  *--query-gpu=index,name,memory.used,memory.total,utilization.gpu*)
+    printf '%s\\n' '0, NVIDIA RTX 3090, 8, 24576, 0' '1, NVIDIA RTX 3090, 12000, 24576, 91'
+    ;;
+  *--query-gpu=index*)
+    printf '%s\\n' 0 1
+    ;;
+  *--id=0*--query-gpu=memory.used*)
+    printf '%s\\n' 8
+    ;;
+  *--id=1*--query-gpu=memory.used*)
+    printf '%s\\n' 12000
+    ;;
+  *--id=0*)
+    ;;
+  *--id=1*)
+    if [[ -n "${FAKE_GPU1_PROCESS:-}" ]]; then
+      printf '%s\\n' '424242, python, 11900'
+    fi
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_nvidia_smi.chmod(0o755)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    data_root = tmp_path / "data"
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    if gpu1_process:
+        env["FAKE_GPU1_PROCESS"] = "1"
+    result = subprocess.run(
+        [
+            "bash",
+            str(PIPELINE),
+            "start",
+            "--repo",
+            str(repo),
+            "--data-root",
+            str(data_root),
+            "--python",
+            "/bin/true",
+            "--gpu",
+            "auto",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return result, data_root
+
+
+def test_auto_gpu_reports_status_and_rejects_if_any_gpu_is_busy(tmp_path):
+    result, data_root = run_auto_gpu_start(tmp_path, gpu1_process=True)
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "GPU 0: NVIDIA RTX 3090, memory 8/24576 MiB, utilization 0%" in output
+    assert "GPU 1: NVIDIA RTX 3090, memory 12000/24576 MiB, utilization 91%" in output
+    assert "GPU 1: PID 424242, user unknown, memory 11900 MiB, command python" in output
+    assert "requires all 2 GPUs to be idle" in output
+    assert not data_root.exists()
+
+
+def test_auto_gpu_rejects_hidden_memory_use_without_a_compute_process(tmp_path):
+    result, data_root = run_auto_gpu_start(tmp_path, gpu1_process=False)
+
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "active GPU compute processes" in output
+    assert "  none" in output
+    assert "process or memory use found on GPU(s): 1" in output
+    assert not data_root.exists()
 
 
 def test_native_training_video_interval_tracks_checkpoint_interval():

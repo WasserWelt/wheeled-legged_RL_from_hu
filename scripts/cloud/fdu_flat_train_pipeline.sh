@@ -20,6 +20,7 @@ DEFAULT_CHECKPOINT_INTERVAL=200
 DEFAULT_STEPS_PER_ITERATION=48
 DEFAULT_CHECKPOINT_VIDEO_LENGTH=200
 DEFAULT_FINAL_VIDEO_LENGTH=1000
+GPU_IDLE_MEMORY_TOLERANCE_MIB=64
 
 usage() {
     cat <<'EOF'
@@ -32,7 +33,7 @@ start options:
   --repo PATH              Repository root (overrides profile)
   --data-root PATH         Logs, checkpoints, and videos root (default: repository root)
   --python PATH            Isaac Lab Python executable
-  --gpu ID|auto            Physical GPU exposed through CUDA_VISIBLE_DEVICES
+  --gpu ID|auto            Physical GPU; auto requires every GPU to be idle
   --skip-gpu-check         Start without rejecting a GPU used by another process
   --task TASK              Training task id
   --num-envs N             Number of training environments (default: 4096)
@@ -92,10 +93,58 @@ gpu_processes() {
         --format=csv,noheader,nounits 2>/dev/null
 }
 
+gpu_memory_used_mib() {
+    local used
+    used="$(nvidia-smi --id="$1" \
+        --query-gpu=memory.used \
+        --format=csv,noheader,nounits 2>/dev/null)" || return 1
+    used="${used%%$'\n'*}"
+    used="${used//[[:space:]]/}"
+    [[ "$used" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$used"
+}
+
+print_gpu_status() {
+    local inventory gpu_count candidate processes pid process_name used_memory total_memory utilization owner
+    inventory="$(nvidia-smi \
+        --query-gpu=index,name,memory.used,memory.total,utilization.gpu \
+        --format=csv,noheader,nounits 2>/dev/null)" || die "failed to query GPU status"
+    [[ -n "${inventory//[[:space:]]/}" ]] || die "no NVIDIA GPU was detected"
+
+    log "GPU status (index, name, memory used/total MiB, utilization):"
+    while IFS=',' read -r candidate process_name used_memory total_memory utilization; do
+        printf '  GPU %s: %s, memory %s/%s MiB, utilization %s%%\n' \
+            "${candidate//[[:space:]]/}" \
+            "${process_name# }" \
+            "${used_memory//[[:space:]]/}" \
+            "${total_memory//[[:space:]]/}" \
+            "${utilization//[[:space:]]/}"
+    done <<< "$inventory"
+
+    gpu_count="$(printf '%s\n' "$inventory" | wc -l)"
+    log "active GPU compute processes (GPU, PID, user, memory MiB, command):"
+    local found=0
+    for ((candidate = 0; candidate < gpu_count; candidate++)); do
+        processes="$(gpu_processes "$candidate")" || die "failed to query GPU ${candidate} processes"
+        while IFS=',' read -r pid process_name used_memory; do
+            pid="${pid//[[:space:]]/}"
+            [[ -n "$pid" ]] || continue
+            owner="$(ps -o user= -p "$pid" 2>/dev/null | awk '{$1=$1; print}' || true)"
+            owner="${owner:-unknown}"
+            printf '  GPU %s: PID %s, user %s, memory %s MiB, command %s\n' \
+                "$candidate" "$pid" "$owner" "${used_memory//[[:space:]]/}" "${process_name# }"
+            found=1
+        done <<< "$processes"
+    done
+    [[ "$found" == "1" ]] || printf '  none\n'
+}
+
 gpu_is_free() {
-    local processes
+    local processes used_memory
     processes="$(gpu_processes "$1")" || return 1
-    [[ -z "${processes//[[:space:]]/}" ]]
+    [[ -z "${processes//[[:space:]]/}" ]] || return 1
+    used_memory="$(gpu_memory_used_mib "$1")" || return 1
+    (( used_memory <= GPU_IDLE_MEMORY_TOLERANCE_MIB ))
 }
 
 resolve_gpu() {
@@ -107,14 +156,17 @@ resolve_gpu() {
     [[ "$gpu_count" =~ ^[1-9][0-9]*$ ]] || die "no NVIDIA GPU was detected"
 
     if [[ "$requested" == "auto" ]]; then
-        local candidate
+        local candidate busy_gpus=()
         for ((candidate = 0; candidate < gpu_count; candidate++)); do
-            if gpu_is_free "$candidate"; then
-                printf '%s\n' "$candidate"
-                return 0
+            if ! gpu_is_free "$candidate"; then
+                busy_gpus+=("$candidate")
             fi
         done
-        die "all ${gpu_count} GPUs have active compute processes"
+        if (( ${#busy_gpus[@]} > 0 )); then
+            die "--gpu auto requires all ${gpu_count} GPUs to be idle; process or memory use found on GPU(s): ${busy_gpus[*]}"
+        fi
+        printf '0\n'
+        return 0
     fi
 
     [[ "$requested" =~ ^[0-9]+$ ]] || die "GPU must be a physical index or auto: $requested"
@@ -124,10 +176,14 @@ resolve_gpu() {
 
 require_free_gpu() {
     local gpu="$1"
-    local processes
+    local processes used_memory
     processes="$(gpu_processes "$gpu")" || die "failed to query GPU ${gpu} processes"
     if [[ -n "${processes//[[:space:]]/}" ]]; then
         die "GPU ${gpu} has active compute processes: ${processes//$'\n'/; }"
+    fi
+    used_memory="$(gpu_memory_used_mib "$gpu")" || die "failed to query GPU ${gpu} memory"
+    if (( used_memory > GPU_IDLE_MEMORY_TOLERANCE_MIB )); then
+        die "GPU ${gpu} uses ${used_memory} MiB with no visible compute process; refusing to start (idle tolerance: ${GPU_IDLE_MEMORY_TOLERANCE_MIB} MiB)"
     fi
 }
 
@@ -231,6 +287,7 @@ start_pipeline() {
     local checkpoint_interval="$DEFAULT_CHECKPOINT_INTERVAL"
     local checkpoint_video_length="$DEFAULT_CHECKPOINT_VIDEO_LENGTH"
     local checkpoint_video_interval=""
+    local gpu_request
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -267,8 +324,17 @@ start_pipeline() {
     [[ -d "$repo" ]] || die "repository does not exist: $repo"
     [[ -x "$python" ]] || die "Isaac Lab Python does not exist: $python"
     [[ "$run_name" =~ ^[A-Za-z0-9._-]+$ ]] || die "run name may contain only letters, digits, dot, underscore, and hyphen"
+    gpu_request="$gpu"
+    print_gpu_status
     gpu="$(resolve_gpu "$gpu")"
     [[ "$check_gpu" == "0" ]] || require_free_gpu "$gpu"
+    if [[ "$check_gpu" == "1" ]]; then
+        if [[ "$gpu_request" == "auto" ]]; then
+            log "GPU safety check passed: all GPUs are idle; selected physical GPU ${gpu}"
+        else
+            log "GPU safety check passed: physical GPU ${gpu} is idle"
+        fi
+    fi
     mkdir -p "$data_root/logs/cloud" "$data_root/logs/rsl_rl"
 
     local train_log="$data_root/logs/cloud/${run_name}.train.log"

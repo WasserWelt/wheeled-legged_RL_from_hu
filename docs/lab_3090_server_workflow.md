@@ -71,13 +71,7 @@ bash scripts/cloud/lab_3090_server_setup.sh check-sync
 
 `check-sync` 和 `sync` 都忽略 `.git`、日志、Hydra `outputs`、Python/测试缓存及 editable 安装生成的 `egg-info`。
 
-先查看两张卡及使用进程：
-
-```bash
-ssh 3090_wyw_local nvidia-smi
-```
-
-再登录服务器并启动：
+登录服务器并启动：
 
 ```bash
 ssh 3090_wyw_local
@@ -91,7 +85,7 @@ bash scripts/cloud/fdu_flat_train_pipeline.sh start \
   --run-name flat_3090_seed42
 ```
 
-`--gpu auto` 会检查两张物理 GPU 的 compute process，选择第一张空闲卡；两张卡都有人使用时拒绝启动。也可以用 `--gpu 0` 或 `--gpu 1` 指定物理卡。训练和最终 Play 都通过 `CUDA_VISIBLE_DEVICES=<物理卡>` 隔离，并在程序内部使用逻辑设备 `cuda:0`。
+`start` 会先打印所有物理 GPU 的利用率、显存占用和 compute process（包括 PID、用户、进程显存及命令）。`--gpu auto` 采用共享服务器的保守规则：只有所有 GPU 都没有 compute process 且每张卡的空载显存不超过 64 MiB 时才选择 GPU 0；任意一张卡有人使用或存在无法归属进程的异常显存占用，都会报错退出，不会创建训练或 watcher。也可以用 `--gpu 0` 或 `--gpu 1` 指定物理卡，此时只检查指定卡。训练和最终 Play 都通过 `CUDA_VISIBLE_DEVICES=<物理卡>` 隔离，并在程序内部使用逻辑设备 `cuda:0`。
 
 不要在共享服务器上使用 `--skip-gpu-check`，除非已经通过其他方式独占该 GPU。
 
