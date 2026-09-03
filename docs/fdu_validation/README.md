@@ -72,3 +72,27 @@ Flat and Rough pass the numerical and L0-boundary gates. Jump has finite PPO
 loss/KL and no NaN, but remains a physical failure because 58/64 environments
 are still in the L0 boundary during the final iteration without the Fudan gas
 spring.
+
+## Standard policy verification play
+
+`scripts/rsl_rl/play_wyw_verify.py` runs the versioned WYW policy-performance
+suite. Flat has 17 nominal and 3 robust scenarios, Rough has 35 nominal and 4
+robust scenarios, and Jump has 3 nominal and 2 robust scenarios. Rough excludes
+flat terrain and includes both pyramid stairs and 5/10/15/20 cm single steps.
+The maximum simulated/video duration across all three tasks is 298.5 seconds.
+
+Calibrate a checkpoint first:
+
+```bash
+python scripts/rsl_rl/play_wyw_verify.py \
+  --variant flat \
+  --checkpoint logs/rsl_rl/wheelbipe_fdu_wyw_flat_direct/<run>/model_<iteration>.pt \
+  --mode calibrate --profile all --headless
+```
+
+Calibration writes `report.json`, `scenarios.csv`, `samples.csv`, one combined
+MP4, and `thresholds.candidate.json` under the checkpoint run's `acceptance/`
+directory. Review the candidate and change its top-level `status` from
+`candidate` to `frozen`; metric limits are the observed per-scenario medians
+without tolerance. Then run `--mode evaluate --thresholds <frozen.json>`.
+Evaluation rejects missing/mismatched training metadata and scenario hashes.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import numpy as np
 
 import isaaclab.terrains as terrain_gen
@@ -52,6 +53,26 @@ class FduRoughSlopeTerrainCfg(terrain_gen.HfPyramidSlopedTerrainCfg):
     noise_range: tuple[float, float] = (-0.05, 0.05)
     noise_step: float = 0.005
     downsampled_scale: float = 0.2
+
+
+@height_field_to_mesh
+def fdu_single_step_terrain(difficulty: float, cfg: "FduSingleStepTerrainCfg") -> np.ndarray:
+    """Generate two flat half-planes separated by one vertical step."""
+    del difficulty
+    width_pixels = int(cfg.size[0] / cfg.horizontal_scale)
+    length_pixels = int(cfg.size[1] / cfg.horizontal_scale)
+    height_units = int(round(cfg.step_height_m / cfg.vertical_scale))
+    heights = np.zeros((width_pixels, length_pixels), dtype=np.int16)
+    heights[width_pixels // 2 :, :] = height_units
+    return heights
+
+
+@configclass
+class FduSingleStepTerrainCfg(terrain_gen.HfTerrainBaseCfg):
+    """A verification-only single step with flat approach and landing zones."""
+
+    function = fdu_single_step_terrain
+    step_height_m: float = 0.10
 
 
 # In curriculum mode columns are assigned by cumulative proportions.  Splitting
@@ -106,3 +127,44 @@ FDU_ROUGH_TERRAIN_CFG = TerrainGeneratorCfg(
         ),
     },
 )
+
+
+# This verification grid deliberately excludes ``flat`` and does not replace
+# FDU_ROUGH_TERRAIN_CFG, so training terrain probabilities remain unchanged.
+FDU_ROUGH_VERIFY_TERRAIN_CFG = copy.deepcopy(FDU_ROUGH_TERRAIN_CFG)
+FDU_ROUGH_VERIFY_TERRAIN_CFG.seed = 42
+FDU_ROUGH_VERIFY_TERRAIN_CFG.num_cols = 22
+FDU_ROUGH_VERIFY_TERRAIN_CFG.sub_terrains = {
+    key: copy.deepcopy(FDU_ROUGH_TERRAIN_CFG.sub_terrains[key])
+    for key in (
+        "smooth_slope_up",
+        "smooth_slope_down",
+        "rough_slope_up",
+        "rough_slope_down",
+        "stairs_down",
+        "stairs_up",
+        "discrete_obstacles",
+    )
+}
+for _terrain in FDU_ROUGH_VERIFY_TERRAIN_CFG.sub_terrains.values():
+    _terrain.proportion = 1.0
+for _height_cm in (5, 10, 15, 20):
+    FDU_ROUGH_VERIFY_TERRAIN_CFG.sub_terrains[f"single_step_{_height_cm:02d}cm"] = FduSingleStepTerrainCfg(
+        proportion=1.0,
+        step_height_m=_height_cm / 100.0,
+    )
+
+
+def fdu_verify_terrain_columns() -> dict[str, list[int]]:
+    """Return the deterministic column assignment used by the verify grid."""
+    keys = list(FDU_ROUGH_VERIFY_TERRAIN_CFG.sub_terrains)
+    proportions = np.asarray(
+        [FDU_ROUGH_VERIFY_TERRAIN_CFG.sub_terrains[key].proportion for key in keys],
+        dtype=np.float64,
+    )
+    cumulative = np.cumsum(proportions / proportions.sum())
+    result = {key: [] for key in keys}
+    for column in range(FDU_ROUGH_VERIFY_TERRAIN_CFG.num_cols):
+        index = int(np.min(np.where(column / FDU_ROUGH_VERIFY_TERRAIN_CFG.num_cols + 0.001 < cumulative)[0]))
+        result[keys[index]].append(column)
+    return result

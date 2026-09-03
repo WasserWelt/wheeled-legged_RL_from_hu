@@ -298,6 +298,15 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self._wyw_command_ranges_x = torch.tensor(
             self.cfg.commands.ranges.lin_vel_x, dtype=torch.float, device=self.device
         ).repeat(self.num_envs, 1)
+        self._wyw_command_override_mask = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
+        )
+        self._wyw_command_override = torch.zeros(
+            self.num_envs, 3, dtype=torch.float, device=self.device
+        )
+        self._wyw_height_override = torch.zeros(
+            self.num_envs, dtype=torch.float, device=self.device
+        )
         self._wyw_flat_curriculum_last_step = 0
         self._wyw_flat_curriculum_pending_log = None
         self._wyw_buffers_ready = True
@@ -363,8 +372,73 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             counter_attr="_wyw_failure_termination_counter",
             raw_attr="_wyw_failure_termination_raw_buf",
         )
+        self._apply_wyw_command_override(reset_env_ids)
         # Deliberately do not clear _wyw_base_air_time or the previous-contact
         # filter. The trained Fudan Jump implementation carries both across reset.
+
+    def set_wyw_command_override(
+        self,
+        env_ids: Sequence[int] | torch.Tensor | None,
+        *,
+        vx: float | torch.Tensor,
+        yaw: float | torch.Tensor,
+        height: float | torch.Tensor,
+    ) -> None:
+        """Lock verification commands across periodic resampling and resets."""
+        self._ensure_wyw_buffers()
+        ids = self._as_env_ids_tensor(env_ids)
+        if ids.numel() == 0:
+            return
+
+        def values(value: float | torch.Tensor) -> torch.Tensor:
+            tensor = torch.as_tensor(value, dtype=torch.float, device=self.device).flatten()
+            if tensor.numel() == 1:
+                return tensor.expand(ids.numel())
+            if tensor.numel() != ids.numel():
+                raise ValueError(f"command override expected 1 or {ids.numel()} values, got {tensor.numel()}")
+            return tensor
+
+        self._wyw_command_override[ids, 0] = values(vx)
+        self._wyw_command_override[ids, 1] = 0.0
+        self._wyw_command_override[ids, 2] = values(yaw)
+        self._wyw_height_override[ids] = values(height)
+        self._wyw_command_override_mask[ids] = True
+        self._apply_wyw_command_override(ids)
+
+    def clear_wyw_command_override(
+        self, env_ids: Sequence[int] | torch.Tensor | None = None
+    ) -> None:
+        """Return selected environments to the normal command generator."""
+        self._ensure_wyw_buffers()
+        ids = self._as_env_ids_tensor(env_ids)
+        self._wyw_command_override_mask[ids] = False
+
+    def _apply_wyw_command_override(self, env_ids: torch.Tensor | None = None) -> None:
+        if not getattr(self, "_wyw_buffers_ready", False):
+            return
+        ids = self._as_env_ids_tensor(env_ids)
+        ids = ids[self._wyw_command_override_mask[ids]]
+        if ids.numel() == 0:
+            return
+        values = self._wyw_command_override[ids]
+        # _advance_fdu_commands may clone this cache while policy rollout is
+        # inside torch.inference_mode(). Scenario transitions update commands
+        # outside that context, so first restore a regular mutable tensor.
+        if self.command.is_inference():
+            self.command = self.command.clone()
+        if hasattr(self.command_generator, "vel_command_b"):
+            self.command_generator.vel_command_b[ids, :3] = values
+        self.command_generator.command[ids, :3] = values
+        self.command[ids, :3] = values
+        if hasattr(self, "height_cmd"):
+            self.height_cmd[ids] = self._wyw_height_override[ids]
+        self._on_command_updated()
+        # The verifier owns the final command value even if an inherited hook
+        # applies a reset/state-machine override during command notification.
+        self.command_generator.command[ids, :3] = values
+        self.command[ids, :3] = values
+        if hasattr(self, "height_cmd"):
+            self.height_cmd[ids] = self._wyw_height_override[ids]
 
     # ------------------------------------------------------------------ #
     # 观测组装（fudan 布局）
@@ -768,6 +842,7 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self.command = self.command_generator.command.clone()
         self._on_command_updated()
         self._apply_predefined_reset_air_command_limits()
+        self._apply_wyw_command_override()
 
     def _sample_wyw_lin_vel_command(self, env_ids: torch.Tensor) -> None:
         if env_ids.numel() == 0 or not hasattr(self, "_wyw_command_ranges_x"):
