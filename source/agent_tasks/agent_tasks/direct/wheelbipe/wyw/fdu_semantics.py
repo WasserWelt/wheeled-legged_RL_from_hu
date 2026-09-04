@@ -163,7 +163,7 @@ def compute_fdu_plane_reward_terms(
         "tracking_ang_vel": torch.exp(-ang_err / sigma) * tracking_gate,
         "tracking_ang_vel_enhance": torch.exp(-ang_err / (10.0 * sigma)) - 1.0,
         "base_height": (
-            torch.exp(-torch.square(observed_height - height_command) / 0.001)
+            torch.exp(-torch.square(observed_height - height_command) / 0.004)
             * tracking_gate
         ),
         # Narrow positive upright reward. The xy norm is sin(tilt)^2 for a

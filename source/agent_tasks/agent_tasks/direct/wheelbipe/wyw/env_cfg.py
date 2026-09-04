@@ -55,8 +55,8 @@ FDU_PLANE_REWARDS = OrderedDict(
     dof_vel=-5.0e-5,
     dof_acc=-3.0e-7,
     torques=-1.0e-3,
-    action_rate=-0.03, #todo
-    action_smooth=-0.03, #todo
+    action_rate=-0.3,
+    action_smooth=-0.3,
     collision=-1.0,
     dof_pos_limits=-1.0,
 )
