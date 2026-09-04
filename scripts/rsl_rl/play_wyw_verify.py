@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
-from datetime import datetime
 import hashlib
 import importlib.util
 import json
@@ -62,6 +61,23 @@ EXPECTED_EXPERIMENTS = {
 }
 VIDEO_FPS = 15.0
 VIDEO_RESOLUTION = (960, 540)
+# H.264 keeps the recordings free of the blocky artifacts the legacy mp4v
+# (MPEG-4 Part 2) encoder produced; libx264 is provided by imageio-ffmpeg.
+VIDEO_CRF = "20"
+
+
+def _open_video_writer(path: "Path", fps: float):
+    """Create an H.264 (libx264) mp4 writer expecting RGB frames."""
+    import imageio
+
+    return imageio.get_writer(
+        str(path),
+        fps=fps,
+        codec="libx264",
+        pixelformat="yuv420p",
+        macro_block_size=2,
+        output_params=["-crf", VIDEO_CRF, "-preset", "medium"],
+    )
 
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -105,8 +121,8 @@ def _git_metadata() -> dict[str, Any]:
 def _default_output_dir() -> Path:
     if args_cli.checkpoint is None:
         raise ValueError("--checkpoint is required to create verification outputs")
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    return args_cli.checkpoint.resolve().parent / "acceptance" / args_cli.variant / timestamp
+    # Flat layout: re-runs overwrite in place instead of piling up timestamped dirs.
+    return args_cli.checkpoint.resolve().parent / "acceptance" / args_cli.variant
 
 
 def _scenario_profiles(profile: str) -> list[str]:
@@ -169,35 +185,6 @@ def _write_csvs(output_dir: Path, reports: list[dict[str, Any]]) -> None:
     write(output_dir / "samples.csv", sample_rows)
 
 
-def _concat_videos(inputs: list[Path], output: Path) -> None:
-    import cv2
-
-    writer = None
-    try:
-        for path in inputs:
-            capture = cv2.VideoCapture(str(path))
-            if not capture.isOpened():
-                raise RuntimeError(f"cannot open profile video: {path}")
-            fps = capture.get(cv2.CAP_PROP_FPS) or 30.0
-            width = int(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            if writer is None:
-                writer = cv2.VideoWriter(
-                    str(output), cv2.VideoWriter_fourcc(*"mp4v"), fps, (width, height)
-                )
-                if not writer.isOpened():
-                    raise RuntimeError(f"cannot create video: {output}")
-            while True:
-                ok, frame = capture.read()
-                if not ok:
-                    break
-                writer.write(frame)
-            capture.release()
-    finally:
-        if writer is not None:
-            writer.release()
-
-
 def _finalize_reports(output_dir: Path, reports: list[dict[str, Any]]) -> int:
     if args_cli.checkpoint is None:
         raise ValueError("--checkpoint is required to finalize verification reports")
@@ -251,7 +238,8 @@ def _finalize_reports(output_dir: Path, reports: list[dict[str, Any]]) -> int:
         "checkpoint": str(args_cli.checkpoint.resolve()),
         "checkpoint_sha256": checkpoint_hash,
         "git": _git_metadata(),
-        "video": str(output_dir / f"{args_cli.variant}_verify.mp4"),
+        # Per-profile videos are kept separate (no concat) to keep the layout flat.
+        "video": [report["video"] for report in reports],
         "evaluation": result,
         "runs": reports,
     }
@@ -260,8 +248,6 @@ def _finalize_reports(output_dir: Path, reports: list[dict[str, Any]]) -> int:
         json.dumps(final_report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     _write_csvs(output_dir, reports)
-    videos = [Path(report["video"]) for report in reports]
-    _concat_videos(videos, output_dir / f"{args_cli.variant}_verify.mp4")
     print(f"WYW VERIFY {status}: {output_dir}", flush=True)
     return exit_code
 
@@ -272,8 +258,7 @@ def _run_all_profiles() -> int:
     child_base = _strip_child_args(sys.argv[1:])
     reports = []
     for profile in ("nominal", "robust"):
-        profile_dir = output_dir / "profiles" / profile
-        profile_dir.mkdir(parents=True, exist_ok=True)
+        # Workers share the flat output dir; per-profile files carry a suffix.
         command = [
             sys.executable,
             str(Path(__file__).resolve()),
@@ -281,13 +266,13 @@ def _run_all_profiles() -> int:
             "--profile",
             profile,
             "--output-dir",
-            str(profile_dir),
+            str(output_dir),
             "--_worker",
         ]
         completed = subprocess.run(command, cwd=REPO_ROOT, check=False)
         if completed.returncode != 0:
             raise RuntimeError(f"{profile} verification worker exited with {completed.returncode}")
-        report_path = profile_dir / "profile_report.json"
+        report_path = output_dir / f"profile_report.{profile}.json"
         if not report_path.is_file():
             raise RuntimeError(
                 f"{profile} verification worker did not produce {report_path}"
@@ -308,7 +293,9 @@ if args_cli.profile == "all" and not args_cli._worker:
 
 args_cli.enable_cameras = True
 if getattr(args_cli, "rendering_mode", None) is None:
-    args_cli.rendering_mode = "performance"
+    # "performance" starves the RTX path tracer of samples, leaving grainy
+    # noise in the recordings; "balanced" denoises cleanly at moderate cost.
+    args_cli.rendering_mode = "balanced"
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
@@ -514,7 +501,7 @@ class _VideoRecorder:
             raise RuntimeError("environment render returned no frame")
         if frame.shape[-1] == 4:
             frame = frame[..., :3]
-        frame = cv2.cvtColor(np.asarray(frame), cv2.COLOR_RGB2BGR)
+        frame = np.ascontiguousarray(frame)
         lines = (
             f"WYW {scenario.variant.upper()} / {scenario.profile.upper()}",
             scenario.id,
@@ -532,17 +519,13 @@ class _VideoRecorder:
                 cv2.LINE_AA,
             )
         if self.writer is None:
-            height, width = frame.shape[:2]
-            self.writer = cv2.VideoWriter(
-                str(self.path), cv2.VideoWriter_fourcc(*"mp4v"), VIDEO_FPS, (width, height)
-            )
-            if not self.writer.isOpened():
-                raise RuntimeError(f"cannot create video: {self.path}")
-        self.writer.write(frame)
+            self.writer = _open_video_writer(self.path, VIDEO_FPS)
+        # cv2.putText drew on the RGB array above; the H.264 writer expects RGB.
+        self.writer.append_data(frame)
 
     def close(self, *, validate: bool = True) -> None:
         if self.writer is not None:
-            self.writer.release()
+            self.writer.close()
         if validate and (not self.path.is_file() or self.path.stat().st_size == 0):
             raise RuntimeError(f"verification produced no video: {self.path}")
 
@@ -808,7 +791,7 @@ def _run_worker() -> dict[str, Any]:
         "video": str(video_path),
     }
     V.validate_profile_report(report)
-    (output_dir / "profile_report.json").write_text(
+    (output_dir / f"profile_report.{args_cli.profile}.json").write_text(
         json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     return report
