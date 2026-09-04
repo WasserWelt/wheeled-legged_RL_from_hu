@@ -186,8 +186,9 @@ def _apply_wyw_common(cfg) -> None:
     cfg.decimation = 5
     cfg.sim.render_interval = cfg.decimation
     cfg.robot_cfg = copy.deepcopy(cfg.robot_cfg)
-    cfg.robot_cfg.spawn.articulation_props.solver_position_iteration_count = 16
-    cfg.robot_cfg.spawn.articulation_props.solver_velocity_iteration_count = 6
+    # Requested solver iteration budget for the WYW training branch.
+    cfg.robot_cfg.spawn.articulation_props.solver_position_iteration_count = 8
+    cfg.robot_cfg.spawn.articulation_props.solver_velocity_iteration_count = 4
     cfg.sim.physics_material = copy.deepcopy(cfg.sim.physics_material)
     cfg.sim.physics_material.friction_combine_mode = "average"
     cfg.sim.physics_material.restitution_combine_mode = "average"
