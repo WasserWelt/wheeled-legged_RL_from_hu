@@ -81,18 +81,30 @@ robust scenarios, and Jump has 3 nominal and 2 robust scenarios. Rough excludes
 flat terrain and includes both pyramid stairs and 5/10/15/20 cm single steps.
 The maximum simulated/video duration across all three tasks is 298.5 seconds.
 
-Calibrate a checkpoint first:
+Create the fixed Flat baseline once:
 
 ```bash
 python scripts/rsl_rl/play_wyw_verify.py \
   --variant flat \
-  --checkpoint logs/rsl_rl/wheelbipe_fdu_wyw_flat_direct/<run>/model_<iteration>.pt \
-  --mode calibrate --profile all --headless
+  --checkpoint logs/rsl_rl/2026-09-03_19-04-10_flat_8192_5000/wheelbipe_fdu_wyw_flat_direct.pt \
+  --mode baseline --profile all --headless
 ```
 
-Calibration writes `report.json`, `scenarios.csv`, `samples.csv`, one combined
-MP4, and `thresholds.candidate.json` under the checkpoint run's `acceptance/`
-directory. Review the candidate and change its top-level `status` from
-`candidate` to `frozen`; metric limits are the observed per-scenario medians
-without tolerance. Then run `--mode evaluate --thresholds <frozen.json>`.
-Evaluation rejects missing/mismatched training metadata and scenario hashes.
+The baseline path is configured in `configs/wyw_verify_baseline.json`.
+Baseline creation writes only `baseline.json` and `baseline.mp4`; nominal and
+robust are concatenated in that order. Evaluate a new checkpoint with:
+
+```bash
+python scripts/rsl_rl/play_wyw_verify.py \
+  --variant flat \
+  --checkpoint <current_checkpoint.pt> \
+  --mode evaluate --profile all --headless
+```
+
+Evaluation requires the fixed baseline package and writes only `report.json`,
+`results.csv`, `comparison.mp4`, and `comparison.png`. The comparison video is left=baseline and
+right=current; each side contains nominal followed by robust. Hashes are not
+used. Structural metadata, scenario IDs/order, metric completeness, safety,
+and the nominal/robust 90% gates remain validated. The image compares each
+metric's median across scenario medians. Robust environments are summarized
+within their scenario first and are never shown as ten separate entries.

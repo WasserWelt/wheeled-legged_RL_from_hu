@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-import hashlib
-import json
 import math
 from statistics import median
-from typing import Any, Iterable
+from typing import Any
 
 
-VERIFY_SCHEMA_VERSION = 1
+VERIFY_SCHEMA_VERSION = 2
 STANDARD_SEED = 42
 NOMINAL_NUM_ENVS = 1
 ROBUST_NUM_ENVS = 10
@@ -250,15 +248,6 @@ def build_scenarios(variant: str, profile: str) -> list[VerifyScenario]:
     return scenarios
 
 
-def manifest_hash(scenarios: Iterable[VerifyScenario]) -> str:
-    payload = {
-        "schema_version": VERIFY_SCHEMA_VERSION,
-        "scenarios": [scenario.to_dict() for scenario in scenarios],
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
-
-
 def standard_num_envs(profile: str) -> int:
     if profile == "nominal":
         return NOMINAL_NUM_ENVS
@@ -278,9 +267,7 @@ def validate_profile_report(report: dict[str, Any]) -> None:
         "num_envs",
         "simulated_duration_s",
         "checkpoint",
-        "checkpoint_sha256",
         "metadata",
-        "manifest_sha256",
         "scenario_summaries",
         "samples",
         "video",
@@ -325,12 +312,12 @@ def validate_final_report(report: dict[str, Any]) -> None:
         "standard",
         "seed",
         "simulated_duration_s",
-        "manifest_sha256",
         "checkpoint",
-        "checkpoint_sha256",
         "git",
         "video",
+        "chart",
         "evaluation",
+        "aggregate_comparison",
         "runs",
     }
     missing = required - set(report)
@@ -338,10 +325,16 @@ def validate_final_report(report: dict[str, Any]) -> None:
         raise ValueError(f"final report missing fields: {sorted(missing)}")
     if report["schema_version"] != VERIFY_SCHEMA_VERSION:
         raise ValueError("final report schema version mismatch")
-    if report["mode"] not in {"calibrate", "evaluate"}:
+    if report["mode"] not in {"baseline", "calibrate", "evaluate"}:
         raise ValueError("final report mode is invalid")
-    if report["status"] not in {"CALIBRATION", "PASS", "FAIL"}:
+    if report["status"] not in {"BASELINE", "PASS", "FAIL"}:
         raise ValueError("final report status is invalid")
+    if report["mode"] == "evaluate":
+        if not isinstance(report["chart"], str) or not report["chart"]:
+            raise ValueError("evaluate report must reference a comparison chart")
+        aggregate = report["aggregate_comparison"]
+        if not isinstance(aggregate, dict) or aggregate.get("method") != "median_of_scenario_medians":
+            raise ValueError("evaluate report aggregate comparison is invalid")
     run_profiles = [run.get("profile") for run in report["runs"]]
     if run_profiles != report["profiles"]:
         raise ValueError("final report profile coverage/order mismatch")
@@ -370,6 +363,33 @@ HIGHER_IS_BETTER = {
     "stable_landing_rate",
 }
 
+METRIC_PRESENTATION = {
+    "survival_rate": ("Survival", "%"),
+    "vx_rmse_m_s": ("VX RMSE", "m/s"),
+    "yaw_rmse_rad_s": ("Yaw RMSE", "rad/s"),
+    "tilt_rms_deg": ("Tilt RMS", "deg"),
+    "tilt_peak_deg": ("Tilt Peak", "deg"),
+    "height_rmse_m": ("Height RMSE", "m"),
+    "completion_rate": ("Completion", "%"),
+    "jump_count": ("Jump Count", "count"),
+    "jump_height_gain_m": ("Jump Height", "m"),
+    "airtime_s": ("Airtime", "s"),
+    "stable_landing_rate": ("Stable Landing", "%"),
+}
+METRIC_PRESENTATION_ORDER = (
+    "survival_rate",
+    "vx_rmse_m_s",
+    "yaw_rmse_rad_s",
+    "tilt_rms_deg",
+    "tilt_peak_deg",
+    "height_rmse_m",
+    "completion_rate",
+    "jump_count",
+    "jump_height_gain_m",
+    "airtime_s",
+    "stable_landing_rate",
+)
+
 
 def required_metrics(variant: str) -> set[str]:
     common = {
@@ -392,6 +412,87 @@ def required_metrics(variant: str) -> set[str]:
     if variant == "flat":
         return common
     raise ValueError(f"unsupported variant: {variant}")
+
+
+def aggregate_comparison(
+    *,
+    profile_summaries: dict[str, list[dict[str, Any]]],
+    baseline: dict[str, Any],
+) -> dict[str, Any]:
+    """Aggregate scenario medians for a compact baseline/current comparison.
+
+    Per-environment samples and scenario min/max values are deliberately ignored.
+    Each scenario contributes exactly one median, including robust scenarios.
+    """
+    validate_baseline_package(baseline)
+    expected_profiles = ["nominal", "robust"]
+    if list(profile_summaries) != expected_profiles:
+        raise ValueError("aggregate comparison requires nominal then robust summaries")
+
+    baseline_by_id = {
+        summary["scenario_id"]: (profile, summary)
+        for profile, entries in baseline["profiles"].items()
+        for summary in entries["scenario_summaries"]
+    }
+    names = required_metrics(baseline["variant"])
+    baseline_values = {name: [] for name in names}
+    current_values = {name: [] for name in names}
+    scenario_count = 0
+    for profile in expected_profiles:
+        expected_ids = [scenario.id for scenario in build_scenarios(baseline["variant"], profile)]
+        summaries = profile_summaries.get(profile, [])
+        actual_ids = [summary.get("scenario_id") for summary in summaries]
+        if actual_ids != expected_ids:
+            raise ValueError(f"aggregate scenario coverage/order mismatch for {profile}")
+        for summary in summaries:
+            scenario_id = summary["scenario_id"]
+            baseline_profile, baseline_summary = baseline_by_id[scenario_id]
+            if baseline_profile != profile:
+                raise ValueError(f"baseline profile mismatch for scenario: {scenario_id}")
+            for name in names:
+                current_value = summary.get("metrics", {}).get(name, {}).get("median")
+                baseline_value = baseline_summary.get("metrics", {}).get(name, {}).get("median")
+                if current_value is None or baseline_value is None:
+                    raise ValueError(f"missing aggregate metric {name} for {scenario_id}")
+                current_value = float(current_value)
+                baseline_value = float(baseline_value)
+                if not math.isfinite(current_value) or not math.isfinite(baseline_value):
+                    raise ValueError(f"non-finite aggregate metric {name} for {scenario_id}")
+                current_values[name].append(current_value)
+                baseline_values[name].append(baseline_value)
+            scenario_count += 1
+
+    metrics = []
+    for name in (item for item in METRIC_PRESENTATION_ORDER if item in names):
+        baseline_median = float(median(baseline_values[name]))
+        current_median = float(median(current_values[name]))
+        delta = current_median - baseline_median
+        direction = "lower" if name in LOWER_IS_BETTER else "higher"
+        improvement = -delta if direction == "lower" else delta
+        improvement_percent = None
+        if not math.isclose(baseline_median, 0.0):
+            improvement_percent = 100.0 * improvement / abs(baseline_median)
+        metrics.append(
+            {
+                "name": name,
+                "label": METRIC_PRESENTATION[name][0],
+                "unit": METRIC_PRESENTATION[name][1],
+                "direction": direction,
+                "baseline": baseline_median,
+                "current": current_median,
+                "delta": delta,
+                "improvement": improvement,
+                "improvement_percent": improvement_percent,
+                "pass": improvement >= 0.0,
+                "scenario_count": scenario_count,
+            }
+        )
+    return {
+        "method": "median_of_scenario_medians",
+        "scenario_count": scenario_count,
+        "profiles": expected_profiles,
+        "metrics": metrics,
+    }
 
 
 def summarize_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -430,48 +531,78 @@ def summarize_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def make_candidate_thresholds(
+def make_baseline_package(
     *,
     variant: str,
     profile_summaries: dict[str, list[dict[str, Any]]],
-    manifest_sha256: str,
-    checkpoint_sha256: str,
+    checkpoint: str,
+    video: str,
 ) -> dict[str, Any]:
-    """Freeze each observed scenario median as a reviewable candidate limit."""
-    scenario_limits: dict[str, Any] = {}
+    """Persist baseline medians and scenario order as the comparison contract."""
+    profiles: dict[str, Any] = {}
     for profile, summaries in profile_summaries.items():
+        expected_ids = [scenario.id for scenario in build_scenarios(variant, profile)]
+        actual_ids = [summary.get("scenario_id") for summary in summaries]
+        if actual_ids != expected_ids:
+            raise ValueError(f"baseline scenario coverage/order mismatch for {profile}")
         for summary in summaries:
-            limits = {}
-            missing = required_metrics(variant) - set(summary["metrics"])
+            missing = required_metrics(variant) - set(summary.get("metrics", {}))
             if missing:
                 raise ValueError(
                     f"scenario {summary['scenario_id']} is missing calibration metrics: {sorted(missing)}"
                 )
-            for name, stats in summary["metrics"].items():
-                if name in LOWER_IS_BETTER:
-                    limits[name] = {"direction": "max", "value": stats["median"]}
-                elif name in HIGHER_IS_BETTER:
-                    limits[name] = {"direction": "min", "value": stats["median"]}
-            scenario_limits[summary["scenario_id"]] = {"profile": profile, "metrics": limits}
+        profiles[profile] = {"scenario_summaries": summaries}
     return {
         "schema_version": VERIFY_SCHEMA_VERSION,
-        "status": "candidate",
+        "type": "wyw_baseline",
+        "status": "frozen",
         "variant": variant,
-        "manifest_sha256": manifest_sha256,
-        "baseline_checkpoint_sha256": checkpoint_sha256,
-        "scenario_limits": scenario_limits,
+        "checkpoint": checkpoint,
+        "video": video,
+        "profiles": profiles,
     }
 
 
-def evaluate_summaries(
+def validate_baseline_package(baseline: dict[str, Any]) -> None:
+    required = {"schema_version", "type", "status", "variant", "checkpoint", "video", "profiles"}
+    missing = required - set(baseline)
+    if missing:
+        raise ValueError(f"baseline package missing fields: {sorted(missing)}")
+    if baseline["schema_version"] != VERIFY_SCHEMA_VERSION:
+        raise ValueError("baseline schema version mismatch")
+    if baseline["type"] != "wyw_baseline" or baseline["status"] != "frozen":
+        raise ValueError("baseline package must be frozen")
+    for profile in ("nominal", "robust"):
+        entries = baseline["profiles"].get(profile)
+        if not isinstance(entries, dict):
+            raise ValueError(f"baseline missing profile: {profile}")
+        summaries = entries.get("scenario_summaries")
+        if not isinstance(summaries, list):
+            raise ValueError(f"baseline missing summaries: {profile}")
+        expected_ids = [scenario.id for scenario in build_scenarios(baseline["variant"], profile)]
+        actual_ids = [summary.get("scenario_id") for summary in summaries]
+        if actual_ids != expected_ids:
+            raise ValueError(f"baseline scenario coverage/order mismatch for {profile}")
+        for summary in summaries:
+            missing = required_metrics(baseline["variant"]) - set(summary.get("metrics", {}))
+            if missing:
+                raise ValueError(f"baseline missing metrics for {summary.get('scenario_id')}: {sorted(missing)}")
+
+
+def compare_summaries(
     *,
     profile_summaries: dict[str, list[dict[str, Any]]],
-    thresholds: dict[str, Any],
+    baseline: dict[str, Any],
 ) -> dict[str, Any]:
-    """Apply strict safety gates and per-profile 90% performance gates."""
-    if thresholds.get("status") != "frozen":
-        raise ValueError("evaluate requires a threshold file with status='frozen'")
-    limits_by_scenario = thresholds.get("scenario_limits", {})
+    """Apply strict safety gates and compare performance against the baseline."""
+    validate_baseline_package(baseline)
+    if baseline["variant"] not in {"flat", "rough", "jump"}:
+        raise ValueError("baseline variant is invalid")
+    baseline_by_id = {
+        summary["scenario_id"]: (profile, summary)
+        for profile, entries in baseline["profiles"].items()
+        for summary in entries["scenario_summaries"]
+    }
     profile_results: dict[str, Any] = {}
     safety_pass = True
     for profile, summaries in profile_summaries.items():
@@ -481,32 +612,35 @@ def evaluate_summaries(
             scenario_id = summary["scenario_id"]
             safety_ok = bool(summary["finite"]) and not summary["failure_reasons"]
             safety_pass &= safety_ok
-            scenario_limits = limits_by_scenario.get(scenario_id)
-            if scenario_limits is None:
-                raise ValueError(f"thresholds missing scenario: {scenario_id}")
-            if scenario_limits.get("profile") != profile:
-                raise ValueError(f"threshold profile mismatch for scenario: {scenario_id}")
-            required = required_metrics(thresholds["variant"])
-            configured = set(scenario_limits.get("metrics", {}))
+            baseline_entry = baseline_by_id.get(scenario_id)
+            if baseline_entry is None:
+                raise ValueError(f"baseline missing scenario: {scenario_id}")
+            baseline_profile, baseline_summary = baseline_entry
+            if baseline_profile != profile:
+                raise ValueError(f"baseline profile mismatch for scenario: {scenario_id}")
+            required = required_metrics(baseline["variant"])
+            configured = set(baseline_summary.get("metrics", {}))
             missing = required - configured
             if missing:
-                raise ValueError(
-                    f"thresholds missing metrics for {scenario_id}: {sorted(missing)}"
-                )
+                raise ValueError(f"baseline missing metrics for {scenario_id}: {sorted(missing)}")
             metric_results = {}
             performance_ok = True
-            for name, limit in scenario_limits.get("metrics", {}).items():
+            for name in sorted(required):
                 actual = summary.get("metrics", {}).get(name, {}).get("median")
-                if actual is None:
-                    ok = False
-                elif limit["direction"] == "max":
-                    ok = actual <= float(limit["value"])
-                elif limit["direction"] == "min":
-                    ok = actual >= float(limit["value"])
+                baseline_value = baseline_summary["metrics"][name]["median"]
+                if name in LOWER_IS_BETTER:
+                    ok = actual is not None and actual <= float(baseline_value)
+                elif name in HIGHER_IS_BETTER:
+                    ok = actual is not None and actual >= float(baseline_value)
                 else:
-                    raise ValueError(f"invalid threshold direction for {scenario_id}/{name}")
+                    raise ValueError(f"unsupported baseline metric: {name}")
                 performance_ok &= ok
-                metric_results[name] = {"actual": actual, "limit": limit, "pass": ok}
+                metric_results[name] = {
+                    "baseline": baseline_value,
+                    "current": actual,
+                    "delta": None if actual is None else float(actual) - float(baseline_value),
+                    "pass": ok,
+                }
             scenario_ok = safety_ok and performance_ok
             passed += int(scenario_ok)
             scenario_results.append(

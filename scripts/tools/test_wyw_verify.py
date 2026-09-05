@@ -63,13 +63,6 @@ def test_rough_has_no_flat_and_keeps_dense_stair_coverage():
     assert all(scenario.score_s == 6.0 for scenario in nominal if scenario.vx == 0.5)
 
 
-def test_manifest_is_order_sensitive_and_stable():
-    scenarios = V.build_scenarios("flat", "nominal")
-    first = V.manifest_hash(scenarios)
-    assert first == V.manifest_hash(V.build_scenarios("flat", "nominal"))
-    assert first != V.manifest_hash(list(reversed(scenarios)))
-
-
 def _summary(scenario_id: str, value: float, *, failure: str | None = None):
     return {
         "scenario_id": scenario_id,
@@ -86,63 +79,101 @@ def _summary(scenario_id: str, value: float, *, failure: str | None = None):
     }
 
 
-def test_candidate_uses_median_without_margin_and_requires_freeze():
-    summaries = {"nominal": [_summary("s0", 0.2)]}
-    candidate = V.make_candidate_thresholds(
-        variant="flat",
-        profile_summaries=summaries,
-        manifest_sha256="manifest",
-        checkpoint_sha256="checkpoint",
-    )
-    limit = candidate["scenario_limits"]["s0"]["metrics"]["vx_rmse_m_s"]
-    assert limit == {"direction": "max", "value": 0.2}
-    with pytest.raises(ValueError, match="frozen"):
-        V.evaluate_summaries(profile_summaries=summaries, thresholds=candidate)
-    candidate["status"] = "frozen"
-    assert V.evaluate_summaries(profile_summaries=summaries, thresholds=candidate)["pass"]
-    summaries["nominal"][0]["metrics"]["vx_rmse_m_s"]["median"] = 0.20001
-    assert not V.evaluate_summaries(profile_summaries=summaries, thresholds=candidate)["pass"]
+def _all_flat_summaries(value: float = 0.1):
+    return {
+        profile: [_summary(scenario.id, value) for scenario in V.build_scenarios("flat", profile)]
+        for profile in ("nominal", "robust")
+    }
 
 
-def test_ninety_percent_gate_and_safety_are_both_required():
-    summaries = {"robust": [_summary(f"s{i}", 0.1) for i in range(10)]}
-    candidate = V.make_candidate_thresholds(
+def test_baseline_package_is_frozen_and_ordered():
+    baseline = V.make_baseline_package(
         variant="flat",
-        profile_summaries=summaries,
-        manifest_sha256="manifest",
-        checkpoint_sha256="checkpoint",
+        profile_summaries=_all_flat_summaries(),
+        checkpoint="logs/baseline.pt",
+        video="baseline.mp4",
     )
-    candidate["status"] = "frozen"
-    summaries["robust"][0]["metrics"]["vx_rmse_m_s"]["median"] = 0.2
-    result = V.evaluate_summaries(profile_summaries=summaries, thresholds=candidate)
-    assert result["pass"]
-    assert result["profiles"]["robust"]["required"] == 9
-    summaries["robust"][1]["metrics"]["vx_rmse_m_s"]["median"] = 0.2
-    assert not V.evaluate_summaries(profile_summaries=summaries, thresholds=candidate)["pass"]
-    summaries["robust"][1]["metrics"]["vx_rmse_m_s"]["median"] = 0.1
-    summaries["robust"][2]["failure_reasons"] = {"contact": 1}
-    result = V.evaluate_summaries(profile_summaries=summaries, thresholds=candidate)
+    V.validate_baseline_package(baseline)
+    assert baseline["status"] == "frozen"
+    assert "manifest_sha256" not in baseline
+    assert "baseline_checkpoint_sha256" not in baseline
+    baseline["profiles"]["nominal"]["scenario_summaries"].reverse()
+    with pytest.raises(ValueError, match="coverage/order"):
+        V.validate_baseline_package(baseline)
+
+
+def test_baseline_comparison_uses_deltas_and_90_percent_gate():
+    baseline = V.make_baseline_package(
+        variant="flat",
+        profile_summaries=_all_flat_summaries(0.1),
+        checkpoint="logs/baseline.pt",
+        video="baseline.mp4",
+    )
+    current = _all_flat_summaries(0.1)
+    current["robust"][0]["metrics"]["vx_rmse_m_s"]["median"] = 0.2
+    result = V.compare_summaries(profile_summaries=current, baseline=baseline)
+    assert not result["pass"]
+    assert result["profiles"]["robust"]["required"] == 3
+    failed_metric = result["profiles"]["robust"]["scenarios"][0]["metrics"]["vx_rmse_m_s"]
+    assert failed_metric["delta"] == pytest.approx(0.1)
+    current["robust"][0]["metrics"]["vx_rmse_m_s"]["median"] = 0.1
+    assert V.compare_summaries(profile_summaries=current, baseline=baseline)["pass"]
+    current["robust"][1]["metrics"]["vx_rmse_m_s"]["median"] = 0.2
+    assert not V.compare_summaries(profile_summaries=current, baseline=baseline)["pass"]
+    current["robust"][1]["metrics"]["vx_rmse_m_s"]["median"] = 0.1
+    current["robust"][2]["failure_reasons"] = {"contact": 1}
+    result = V.compare_summaries(profile_summaries=current, baseline=baseline)
     assert not result["safety_pass"]
     assert not result["pass"]
 
 
-def test_frozen_thresholds_require_complete_metrics_and_matching_profile():
-    summaries = {"nominal": [_summary("s0", 0.1)]}
-    frozen = V.make_candidate_thresholds(
+def test_baseline_comparison_rejects_profile_mismatch_and_missing_metrics():
+    baseline = V.make_baseline_package(
         variant="flat",
-        profile_summaries=summaries,
-        manifest_sha256="manifest",
-        checkpoint_sha256="checkpoint",
+        profile_summaries=_all_flat_summaries(),
+        checkpoint="logs/baseline.pt",
+        video="baseline.mp4",
     )
-    frozen["status"] = "frozen"
-    frozen["scenario_limits"]["s0"]["profile"] = "robust"
-    with pytest.raises(ValueError, match="profile mismatch"):
-        V.evaluate_summaries(profile_summaries=summaries, thresholds=frozen)
+    current = _all_flat_summaries()
+    current["nominal"][0]["scenario_id"] = "wrong"
+    with pytest.raises(ValueError, match="baseline missing scenario"):
+        V.compare_summaries(profile_summaries=current, baseline=baseline)
+    baseline = V.make_baseline_package(
+        variant="flat",
+        profile_summaries=_all_flat_summaries(),
+        checkpoint="logs/baseline.pt",
+        video="baseline.mp4",
+    )
+    del baseline["profiles"]["nominal"]["scenario_summaries"][0]["metrics"]["height_rmse_m"]
+    with pytest.raises(ValueError, match="baseline missing metrics"):
+        V.validate_baseline_package(baseline)
 
-    frozen["scenario_limits"]["s0"]["profile"] = "nominal"
-    del frozen["scenario_limits"]["s0"]["metrics"]["height_rmse_m"]
-    with pytest.raises(ValueError, match="missing metrics"):
-        V.evaluate_summaries(profile_summaries=summaries, thresholds=frozen)
+
+def test_aggregate_uses_scenario_medians_without_expanding_robust_envs():
+    baseline_summaries = _all_flat_summaries(0.1)
+    current = _all_flat_summaries(0.1)
+    all_summaries = current["nominal"] + current["robust"]
+    for index, summary in enumerate(all_summaries):
+        summary["metrics"]["vx_rmse_m_s"]["median"] = float(index + 1)
+        summary["metrics"]["vx_rmse_m_s"]["min"] = -10000.0
+        summary["metrics"]["vx_rmse_m_s"]["max"] = 10000.0
+        summary["num_samples"] = 10 if summary in current["robust"] else 1
+    baseline = V.make_baseline_package(
+        variant="flat",
+        profile_summaries=baseline_summaries,
+        checkpoint="logs/baseline.pt",
+        video="baseline.mp4",
+    )
+    aggregate = V.aggregate_comparison(profile_summaries=current, baseline=baseline)
+    vx = next(metric for metric in aggregate["metrics"] if metric["name"] == "vx_rmse_m_s")
+    assert aggregate["method"] == "median_of_scenario_medians"
+    assert aggregate["scenario_count"] == 20
+    assert vx["current"] == pytest.approx(10.5)
+    assert vx["direction"] == "lower"
+    assert not vx["pass"]
+    survival = next(metric for metric in aggregate["metrics"] if metric["name"] == "survival_rate")
+    assert survival["direction"] == "higher"
+    assert survival["pass"]
 
 
 def test_profile_and_final_report_format_validation():
@@ -165,9 +196,7 @@ def test_profile_and_final_report_format_validation():
         "num_envs": V.ROBUST_NUM_ENVS,
         "simulated_duration_s": 10.5,
         "checkpoint": "model.pt",
-        "checkpoint_sha256": "hash",
         "metadata": {},
-        "manifest_sha256": "manifest",
         "scenario_summaries": summaries,
         "samples": samples,
         "video": "flat_robust.mp4",
@@ -175,19 +204,19 @@ def test_profile_and_final_report_format_validation():
     V.validate_profile_report(profile_report)
     final_report = {
         "schema_version": V.VERIFY_SCHEMA_VERSION,
-        "status": "CALIBRATION",
-        "mode": "calibrate",
+        "status": "BASELINE",
+        "mode": "baseline",
         "variant": "flat",
         "profiles": ["robust"],
         "standard": True,
         "seed": V.STANDARD_SEED,
         "simulated_duration_s": 10.5,
-        "manifest_sha256": "manifest",
         "checkpoint": "model.pt",
-        "checkpoint_sha256": "hash",
         "git": {},
         "video": "flat_verify.mp4",
+        "chart": None,
         "evaluation": None,
+        "aggregate_comparison": None,
         "runs": [profile_report],
     }
     V.validate_final_report(final_report)

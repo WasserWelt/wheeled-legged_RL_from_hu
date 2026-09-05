@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import copy
 import csv
-import hashlib
 import importlib.util
 import json
 import math
@@ -83,9 +82,13 @@ def _open_video_writer(path: "Path", fps: float):
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--variant", choices=("flat", "rough", "jump"), default=None)
 parser.add_argument("--checkpoint", type=Path, default=None)
-parser.add_argument("--mode", choices=("calibrate", "evaluate"), default="calibrate")
+parser.add_argument("--mode", choices=("baseline", "calibrate", "evaluate"), default="evaluate")
 parser.add_argument("--profile", choices=("nominal", "robust", "all"), default="all")
-parser.add_argument("--thresholds", type=Path, default=None)
+parser.add_argument(
+    "--baseline-config",
+    type=Path,
+    default=REPO_ROOT / "configs" / "wyw_verify_baseline.json",
+)
 parser.add_argument("--output-dir", type=Path, default=None)
 parser.add_argument("--list-scenarios", action="store_true")
 parser.add_argument("--_worker", action="store_true", help=argparse.SUPPRESS)
@@ -95,14 +98,8 @@ if args_cli.variant is None:
     parser.error("--variant is required")
 if args_cli.checkpoint is None and not args_cli.list_scenarios:
     parser.error("--checkpoint is required")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+if not args_cli.list_scenarios and not args_cli._worker and args_cli.profile != "all":
+    parser.error("baseline/evaluate output requires --profile all")
 
 
 def _git_metadata() -> dict[str, Any]:
@@ -119,10 +116,26 @@ def _git_metadata() -> dict[str, Any]:
 
 
 def _default_output_dir() -> Path:
+    if args_cli.mode == "baseline":
+        return _load_baseline_config()["package_dir"]
     if args_cli.checkpoint is None:
         raise ValueError("--checkpoint is required to create verification outputs")
-    # Flat layout: re-runs overwrite in place instead of piling up timestamped dirs.
-    return args_cli.checkpoint.resolve().parent / "acceptance" / args_cli.variant
+    return args_cli.checkpoint.resolve().parent / "acceptance" / args_cli.variant / "evaluate"
+
+
+def _load_baseline_config() -> dict[str, Any]:
+    path = args_cli.baseline_config.resolve()
+    if not path.is_file():
+        raise ValueError(f"baseline config does not exist: {path}")
+    config = json.loads(path.read_text(encoding="utf-8"))
+    if config.get("variant") != args_cli.variant:
+        raise ValueError("baseline config variant mismatch")
+    for key in ("checkpoint", "package_dir"):
+        if key not in config:
+            raise ValueError(f"baseline config missing {key}")
+    config["checkpoint"] = (REPO_ROOT / config["checkpoint"]).resolve()
+    config["package_dir"] = (REPO_ROOT / config["package_dir"]).resolve()
+    return config
 
 
 def _scenario_profiles(profile: str) -> list[str]:
@@ -155,74 +168,302 @@ def _strip_child_args(arguments: list[str]) -> list[str]:
     return result
 
 
-def _write_csvs(output_dir: Path, reports: list[dict[str, Any]]) -> None:
-    scenario_rows = []
-    sample_rows = []
+def _write_result_table(
+    output_dir: Path,
+    reports: list[dict[str, Any]],
+    comparison: dict[str, Any] | None = None,
+    baseline: dict[str, Any] | None = None,
+) -> Path:
+    """Write one concise row per scenario with baseline/current deltas."""
+    rows: list[dict[str, Any]] = []
+    comparison_by_id = {}
+    baseline_by_id = {}
+    if comparison is not None:
+        comparison_by_id = {
+            item["scenario_id"]: item
+            for profile in comparison["profiles"].values()
+            for item in profile["scenarios"]
+        }
+    if baseline is not None:
+        for profile in baseline.get("profiles", {}).values():
+            for item in profile.get("scenario_summaries", []):
+                baseline_by_id[item["scenario_id"]] = item
     for report in reports:
         profile = report["profile"]
         for summary in report["scenario_summaries"]:
+            item = comparison_by_id.get(summary["scenario_id"], {})
+            metrics = summary["metrics"]
             row: dict[str, Any] = {
                 "profile": profile,
                 "scenario_id": summary["scenario_id"],
-                "finite": summary["finite"],
+                "baseline_status": "PASS"
+                if baseline_by_id.get(summary["scenario_id"], {}).get("finite", True)
+                and not baseline_by_id.get(summary["scenario_id"], {}).get("failure_reasons", {})
+                else "FAIL",
+                "current_status": "PASS" if summary["finite"] and not summary["failure_reasons"] else "FAIL",
+                "safety_status": "PASS" if item.get("safety_pass", False) else "FAIL",
+                "performance_status": "PASS" if item.get("performance_pass", False) else "FAIL",
                 "failure_reasons": json.dumps(summary["failure_reasons"], sort_keys=True),
-                "num_samples": summary["num_samples"],
             }
-            for name, stats in summary["metrics"].items():
-                for stat, value in stats.items():
-                    row[f"{name}_{stat}"] = value
-            scenario_rows.append(row)
-        sample_rows.extend({"profile": profile, **sample} for sample in report["samples"])
+            for name in sorted(metrics):
+                current = metrics[name]["median"]
+                metric = item.get("metrics", {}).get(name, {})
+                row[f"baseline_{name}"] = metric.get("baseline")
+                row[f"current_{name}"] = current
+                row[f"delta_{name}"] = metric.get("delta")
+            rows.append(row)
+    path = output_dir / "results.csv"
+    fields = sorted({key for row in rows for key in row})
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
 
-    def write(path: Path, rows: list[dict[str, Any]]) -> None:
-        fields = sorted({key for row in rows for key in row})
-        with path.open("w", newline="", encoding="utf-8") as stream:
-            writer = csv.DictWriter(stream, fieldnames=fields)
-            writer.writeheader()
-            writer.writerows(rows)
 
-    write(output_dir / "scenarios.csv", scenario_rows)
-    write(output_dir / "samples.csv", sample_rows)
+def _concat_profile_videos(
+    output_dir: Path, reports: list[dict[str, Any]], name: str
+) -> Path:
+    by_profile = {report["profile"]: Path(report["video"]) for report in reports}
+    if set(by_profile) != {"nominal", "robust"}:
+        raise ValueError("all profiles are required to concatenate verification video")
+    output = output_dir / name
+    command = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-i", str(by_profile["nominal"]), "-i", str(by_profile["robust"]),
+        "-filter_complex",
+        "[0:v][1:v]concat=n=2:v=1:a=0[v]",
+        "-map", "[v]", "-r", str(VIDEO_FPS), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        str(output),
+    ]
+    completed = subprocess.run(command, cwd=REPO_ROOT, check=False, capture_output=True, text=True)
+    if completed.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
+        detail = completed.stderr.strip() or "unknown ffmpeg error"
+        raise RuntimeError(f"cannot create comparison video: {detail}")
+    return output
+
+
+def _write_baseline_comparison_video(
+    output_dir: Path, baseline_video: Path, current_video: Path
+) -> Path:
+    output = output_dir / "comparison.mp4"
+    command = [
+        "ffmpeg", "-y", "-loglevel", "error", "-i", str(baseline_video), "-i", str(current_video),
+        "-filter_complex",
+        "[0:v]setpts=PTS-STARTPTS,drawtext=text='BASELINE':x=24:y=120:fontsize=28:fontcolor=yellow:box=1:boxcolor=black@0.55[left];"
+        "[1:v]setpts=PTS-STARTPTS,drawtext=text='CURRENT':x=24:y=120:fontsize=28:fontcolor=cyan:box=1:boxcolor=black@0.55[right];"
+        "[left][right]hstack=inputs=2:shortest=1[v]",
+        "-map", "[v]", "-r", str(VIDEO_FPS), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        str(output),
+    ]
+    completed = subprocess.run(command, cwd=REPO_ROOT, check=False, capture_output=True, text=True)
+    if completed.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError(f"cannot create baseline comparison video: {completed.stderr.strip()}")
+    return output
+
+
+def _format_metric_value(value: float, unit: str) -> str:
+    if unit == "%":
+        return f"{100.0 * value:.1f}%"
+    if unit == "count":
+        return f"{value:.2f}"
+    return f"{value:.3f} {unit}"
+
+
+def _write_comparison_chart(
+    output_dir: Path,
+    *,
+    status: str,
+    comparison: dict[str, Any],
+    aggregate: dict[str, Any],
+) -> Path:
+    """Render one aggregate row per metric; robust envs are never expanded."""
+    os.environ.setdefault("MPLCONFIGDIR", "/tmp/wyw_verify_matplotlib")
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    metrics = aggregate["metrics"]
+    baseline_color = "#4B5563"
+    current_color = "#0891B2"
+    green = "#15803D"
+    red = "#B91C1C"
+    pale = "#F3F4F6"
+
+    relative_current = []
+    for metric in metrics:
+        baseline_value = metric["baseline"]
+        current_value = metric["current"]
+        if math.isclose(baseline_value, 0.0):
+            relative_current.append(100.0 if math.isclose(current_value, 0.0) else 200.0)
+        else:
+            relative_current.append(100.0 * current_value / abs(baseline_value))
+
+    fig = plt.figure(figsize=(13.5, 7.6), facecolor="white")
+    grid = fig.add_gridspec(2, 1, height_ratios=(1.15, 5.0), hspace=0.18)
+    header = fig.add_subplot(grid[0])
+    header.axis("off")
+    header.text(0.0, 0.92, f"WYW {args_cli.variant.title()} Baseline Comparison", fontsize=22, weight="bold", va="top")
+    header.text(
+        0.0,
+        0.54,
+        f"Median across {aggregate['scenario_count']} scenario medians; robust environments are aggregated per scenario",
+        fontsize=10.5,
+        color="#4B5563",
+        va="top",
+    )
+    profile_parts = []
+    for profile in ("nominal", "robust"):
+        result = comparison["profiles"][profile]
+        profile_parts.append(f"{profile.title()} {result['passed']}/{result['total']}")
+    safety_passed = sum(
+        int(item["safety_pass"])
+        for result in comparison["profiles"].values()
+        for item in result["scenarios"]
+    )
+    total = sum(result["total"] for result in comparison["profiles"].values())
+    summary = f"{status}     Safety {safety_passed}/{total}     " + "     ".join(profile_parts)
+    header.text(
+        0.0,
+        0.12,
+        summary,
+        fontsize=12,
+        weight="bold",
+        color=green if status == "PASS" else red,
+        va="bottom",
+        bbox={"boxstyle": "round,pad=0.45", "facecolor": "#F0FDF4" if status == "PASS" else "#FEF2F2", "edgecolor": "none"},
+    )
+
+    axis = fig.add_subplot(grid[1])
+    y = np.arange(len(metrics))
+    height = 0.31
+    axis.barh(y - height / 2, [100.0] * len(metrics), height, color=baseline_color, label="Baseline")
+    axis.barh(y + height / 2, relative_current, height, color=current_color, label="Current")
+    axis.axvline(100.0, color="#9CA3AF", linewidth=1, linestyle="--", zorder=0)
+    max_relative = max([100.0, *relative_current])
+    axis.set_xlim(0.0, max(125.0, max_relative * 1.22))
+    axis.set_yticks(y, [metric["label"] for metric in metrics], fontsize=11)
+    axis.invert_yaxis()
+    axis.set_xlabel("Relative magnitude (baseline = 100)", color="#4B5563")
+    axis.grid(axis="x", color="#E5E7EB", linewidth=0.8)
+    axis.set_axisbelow(True)
+    axis.spines[["top", "right", "left"]].set_visible(False)
+    axis.spines["bottom"].set_color("#D1D5DB")
+    axis.tick_params(axis="y", length=0)
+    axis.legend(
+        loc="lower right", bbox_to_anchor=(1.0, 1.01), frameon=False, ncol=2
+    )
+
+    x_text = axis.get_xlim()[1] * 0.995
+    for index, metric in enumerate(metrics):
+        baseline_text = _format_metric_value(metric["baseline"], metric["unit"])
+        current_text = _format_metric_value(metric["current"], metric["unit"])
+        change = metric["improvement_percent"]
+        if math.isclose(metric["improvement"], 0.0, abs_tol=1e-12):
+            change_text = "same"
+        elif change is None:
+            change_text = "better" if metric["improvement"] > 0 else "same" if metric["pass"] else "worse"
+        elif change > 0:
+            change_text = f"{change:+.1f}% better"
+        else:
+            change_text = f"{abs(change):.1f}% worse"
+        color = green if metric["pass"] else red
+        axis.text(x_text, index - height / 2, baseline_text, ha="right", va="center", fontsize=9, color=baseline_color)
+        axis.text(x_text, index + height / 2, f"{current_text}  ({change_text})", ha="right", va="center", fontsize=9, color=color, weight="bold")
+
+    fig.text(0.012, 0.012, "Lower is better for RMSE/tilt; higher is better for survival and task outcomes.", fontsize=9, color="#6B7280")
+    path = output_dir / "comparison.png"
+    fig.savefig(path, dpi=160, bbox_inches="tight", facecolor=pale)
+    plt.close(fig)
+    return path
+
+
+def _cleanup_intermediates(
+    output_dir: Path, reports: list[dict[str, Any]], *, remove_videos: bool
+) -> None:
+    """Keep only final evidence after all-profile aggregation."""
+    for report in reports:
+        names = [f"profile_report.{report['profile']}.json"]
+        if remove_videos:
+            names.append(Path(report["video"]).name)
+        for name in names:
+            path = output_dir / name
+            if path.is_file():
+                path.unlink()
+
+
+def _load_baseline_package() -> dict[str, Any]:
+    config = _load_baseline_config()
+    path = config["package_dir"] / "baseline.json"
+    if not path.is_file():
+        raise ValueError(f"baseline package does not exist: {path}; run --mode baseline first")
+    baseline = json.loads(path.read_text(encoding="utf-8"))
+    V.validate_baseline_package(baseline)
+    if baseline["variant"] != args_cli.variant:
+        raise ValueError("baseline package variant mismatch")
+    video = Path(baseline["video"])
+    if not video.is_absolute():
+        video = (path.parent / video).resolve()
+    if not video.is_file():
+        raise ValueError(f"baseline video does not exist: {video}")
+    return baseline
 
 
 def _finalize_reports(output_dir: Path, reports: list[dict[str, Any]]) -> int:
     if args_cli.checkpoint is None:
         raise ValueError("--checkpoint is required to finalize verification reports")
     scenarios = _selected_scenarios()
-    manifest = V.manifest_hash(scenarios)
-    checkpoint_hash = _sha256(args_cli.checkpoint.resolve())
     profile_summaries = {
         report["profile"]: report["scenario_summaries"] for report in reports
     }
-    result: dict[str, Any] | None = None
-    if args_cli.mode == "calibrate":
-        candidate = V.make_candidate_thresholds(
+    profile_video_names = [Path(report["video"]).name for report in reports]
+    combined_video = _concat_profile_videos(output_dir, reports, "combined.mp4")
+    comparison: dict[str, Any] | None = None
+    aggregate: dict[str, Any] | None = None
+    chart: Path | None = None
+    if args_cli.mode == "baseline" or args_cli.mode == "calibrate":
+        config_checkpoint = _load_baseline_config()["checkpoint"]
+        if args_cli.checkpoint.resolve() != config_checkpoint:
+            raise ValueError(
+                f"baseline checkpoint must match configured canonical checkpoint: {config_checkpoint}"
+            )
+        baseline = V.make_baseline_package(
             variant=args_cli.variant,
             profile_summaries=profile_summaries,
-            manifest_sha256=manifest,
-            checkpoint_sha256=checkpoint_hash,
+            checkpoint=str(args_cli.checkpoint.resolve()),
+            video="baseline.mp4",
         )
-        (output_dir / "thresholds.candidate.json").write_text(
-            json.dumps(candidate, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        baseline["video"] = "baseline.mp4"
+        (output_dir / "baseline.json").write_text(
+            json.dumps(baseline, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        status = "CALIBRATION"
+        final_video = output_dir / "baseline.mp4"
+        combined_video.replace(final_video)
+        status = "BASELINE"
         exit_code = 0
     else:
-        if args_cli.thresholds is None:
-            raise ValueError("--thresholds is required in evaluate mode")
-        thresholds = json.loads(args_cli.thresholds.read_text(encoding="utf-8"))
-        if thresholds.get("schema_version") != V.VERIFY_SCHEMA_VERSION:
-            raise ValueError("threshold schema version mismatch")
-        if thresholds.get("variant") != args_cli.variant:
-            raise ValueError("threshold variant mismatch")
-        if thresholds.get("manifest_sha256") != manifest:
-            raise ValueError("threshold scenario manifest mismatch")
-        result = V.evaluate_summaries(
-            profile_summaries=profile_summaries, thresholds=thresholds
+        baseline = _load_baseline_package()
+        comparison = V.compare_summaries(
+            profile_summaries=profile_summaries, baseline=baseline
         )
-        status = "PASS" if result["pass"] else "FAIL"
-        exit_code = 0 if result["pass"] else 1
-
+        aggregate = V.aggregate_comparison(
+            profile_summaries=profile_summaries, baseline=baseline
+        )
+        baseline_video = Path(baseline["video"])
+        if not baseline_video.is_absolute():
+            baseline_video = (_load_baseline_config()["package_dir"] / baseline_video).resolve()
+        final_video = _write_baseline_comparison_video(output_dir, baseline_video, combined_video)
+        status = "PASS" if comparison["pass"] else "FAIL"
+        exit_code = 0 if comparison["pass"] else 1
+        chart = _write_comparison_chart(
+            output_dir, status=status, comparison=comparison, aggregate=aggregate
+        )
+    if args_cli.mode not in {"baseline", "calibrate"}:
+        _write_result_table(output_dir, reports, comparison, baseline)
+    for report in reports:
+        report["video"] = str(final_video)
     final_report = {
         "schema_version": V.VERIFY_SCHEMA_VERSION,
         "status": status,
@@ -234,20 +475,34 @@ def _finalize_reports(output_dir: Path, reports: list[dict[str, Any]]) -> int:
         "simulated_duration_s": sum(
             scenario.settle_s + scenario.score_s for scenario in scenarios
         ),
-        "manifest_sha256": manifest,
         "checkpoint": str(args_cli.checkpoint.resolve()),
-        "checkpoint_sha256": checkpoint_hash,
         "git": _git_metadata(),
-        # Per-profile videos are kept separate (no concat) to keep the layout flat.
-        "video": [report["video"] for report in reports],
-        "evaluation": result,
+        "video": str(final_video),
+        "chart": None if chart is None else str(chart),
+        "baseline": None
+        if args_cli.mode in {"baseline", "calibrate"}
+        else {"package": str(_load_baseline_config()["package_dir"] / "baseline.json"), "checkpoint": baseline["checkpoint"]},
+        "evaluation": comparison,
+        "aggregate_comparison": aggregate,
         "runs": reports,
     }
-    V.validate_final_report(final_report)
-    (output_dir / "report.json").write_text(
-        json.dumps(final_report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    _write_csvs(output_dir, reports)
+    if args_cli.mode not in {"baseline", "calibrate"}:
+        V.validate_final_report(final_report)
+        (output_dir / "report.json").write_text(
+            json.dumps(final_report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    for name in profile_video_names:
+        path = output_dir / name
+        if path.is_file():
+            path.unlink()
+    _cleanup_intermediates(output_dir, reports, remove_videos=False)
+    if combined_video.is_file():
+        combined_video.unlink()
+    if args_cli.mode == "baseline" or args_cli.mode == "calibrate":
+        # baseline.json and baseline.mp4 are the persistent reference package.
+        (output_dir / "baseline.json").write_text(
+            json.dumps(baseline, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     print(f"WYW VERIFY {status}: {output_dir}", flush=True)
     return exit_code
 
@@ -783,9 +1038,7 @@ def _run_worker() -> dict[str, Any]:
             for scenario in V.build_scenarios(args_cli.variant, args_cli.profile)
         ),
         "checkpoint": str(checkpoint),
-        "checkpoint_sha256": _sha256(checkpoint),
         "metadata": metadata,
-        "manifest_sha256": V.manifest_hash(V.build_scenarios(args_cli.variant, args_cli.profile)),
         "scenario_summaries": summaries,
         "samples": all_samples,
         "video": str(video_path),

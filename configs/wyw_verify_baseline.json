@@ -1,0 +1,5 @@
+{
+  "variant": "flat",
+  "checkpoint": "logs/rsl_rl/2026-09-03_19-04-10_flat_8192_5000/wheelbipe_fdu_wyw_flat_direct.pt",
+  "package_dir": "logs/rsl_rl/2026-09-03_19-04-10_flat_8192_5000/acceptance/flat/baseline"
+}
