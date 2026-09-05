@@ -8,7 +8,7 @@ from statistics import median
 from typing import Any
 
 
-VERIFY_SCHEMA_VERSION = 2
+VERIFY_SCHEMA_VERSION = 3
 STANDARD_SEED = 42
 NOMINAL_NUM_ENVS = 1
 ROBUST_NUM_ENVS = 10
@@ -353,6 +353,10 @@ LOWER_IS_BETTER = {
     "tilt_rms_deg",
     "tilt_peak_deg",
     "height_rmse_m",
+    "leg_action_delta_rms",
+    "wheel_action_delta_rms",
+    "leg_action_second_diff_rms",
+    "wheel_action_second_diff_rms",
 }
 HIGHER_IS_BETTER = {
     "survival_rate",
@@ -370,6 +374,10 @@ METRIC_PRESENTATION = {
     "tilt_rms_deg": ("Tilt RMS", "deg"),
     "tilt_peak_deg": ("Tilt Peak", "deg"),
     "height_rmse_m": ("Height RMSE", "m"),
+    "leg_action_delta_rms": ("Leg Action Delta RMS", "action/step"),
+    "wheel_action_delta_rms": ("Wheel Action Delta RMS", "action/step"),
+    "leg_action_second_diff_rms": ("Leg Action 2nd Diff RMS", "action/step^2"),
+    "wheel_action_second_diff_rms": ("Wheel Action 2nd Diff RMS", "action/step^2"),
     "completion_rate": ("Completion", "%"),
     "jump_count": ("Jump Count", "count"),
     "jump_height_gain_m": ("Jump Height", "m"),
@@ -383,6 +391,10 @@ METRIC_PRESENTATION_ORDER = (
     "tilt_rms_deg",
     "tilt_peak_deg",
     "height_rmse_m",
+    "leg_action_delta_rms",
+    "wheel_action_delta_rms",
+    "leg_action_second_diff_rms",
+    "wheel_action_second_diff_rms",
     "completion_rate",
     "jump_count",
     "jump_height_gain_m",
@@ -399,6 +411,10 @@ def required_metrics(variant: str) -> set[str]:
         "tilt_rms_deg",
         "tilt_peak_deg",
         "height_rmse_m",
+        "leg_action_delta_rms",
+        "wheel_action_delta_rms",
+        "leg_action_second_diff_rms",
+        "wheel_action_second_diff_rms",
     }
     if variant == "rough":
         return common | {"completion_rate"}

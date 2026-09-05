@@ -108,3 +108,14 @@ used. Structural metadata, scenario IDs/order, metric completeness, safety,
 and the nominal/robust 90% gates remain validated. The image compares each
 metric's median across scenario medians. Robust environments are summarized
 within their scenario first and are never shown as ten separate entries.
+In addition to tracking, attitude, survival, and task outcomes, schema v3
+records normalized policy-action smoothness separately for the four leg actions
+and two wheel actions. It reports RMS first differences (action change per
+control step) and RMS second differences (high-frequency action jitter); lower
+is better for all four. Only scored samples are used, and the first one/two
+samples are omitted where the corresponding difference has no in-window
+history. The video overlay shows env 0's current ``cmd=[vx, yaw, height]`` and
+all six runner-clipped policy actions in
+``lf0, l20, left wheel, rf0, r20, right wheel`` order.
+Because these fields are required comparison metrics, an older schema-v2
+baseline must be regenerated once before evaluating new checkpoints.

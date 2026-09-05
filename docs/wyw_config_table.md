@@ -35,7 +35,7 @@ Fudan reward 和接触/腾空计算产生。
 
 四个腿动作直接按 `q_target = q_default + 0.5 * action` 发送给实体驱动杆，不再计算
 `(L0, theta0)` 后投影或逆解。`L0/theta0` 只用于 reward、几何诊断和稳定边界日志。轮动作是
-速度目标 `10 * action`。策略输出仍为 6 维：四个实体驱动杆位置目标和两个轮速度目标。
+速度目标 `60 * action` 并限幅到 `±60 rad/s`。策略输出仍为 6 维：四个实体驱动杆位置目标和两个轮速度目标。
 runner 侧 Flat/Rough 将策略动作裁剪到 `[-1,1]`；Jump 为兼容既有 Fudan checkpoint，仍使用
 `[-100,100]` 的宽裁剪范围。环境侧随后再对轮速度目标裁剪到 `±60 rad/s`。
 
@@ -155,7 +155,7 @@ Jump 不使用 Flat/Rough 的 `base_height`、`upright_orientation`、`lin_vel_z
 
 - 速度跟踪：`exp(-squared_error / 0.25)`；enhance 使用 `exp(-squared_error / 2.5) - 1`。
 - Jump 的线速度跟踪两项额外乘 `2`。
-- 高度：`exp(-square(height - command) / 0.001) * clamp(-gz,0,0.7)/0.7`；姿态惩罚为
+- 高度：`exp(-square(height - command) / 0.004) * clamp(-gz,0,0.7)/0.7`；姿态惩罚为
   `gx^2 + gy^2`；独立的窄直立
   奖励为 `exp(-(gx^2+gy^2)/0.025) * (gz<0)`。Flat/Rough 的正向速度跟踪项另乘
   RobotLab gate：`clamp(-gz, 0, 0.7) / 0.7`。

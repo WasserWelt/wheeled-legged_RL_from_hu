@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 
-ROOT = Path(__file__).parents[1]
+ROOT = Path(__file__).parents[2]
 
 
 def _class_assignment(path: Path, class_name: str, attribute: str) -> object:
@@ -34,23 +34,20 @@ def _call_name(node: ast.Call) -> str | None:
     return None
 
 
-def test_wyw_wheel_pd_path_and_p13_71_speed_cap():
+def test_wyw_wheel_target_uses_full_normalized_range_and_p13_71_speed_cap():
     env_cfg_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env_cfg.py"
     target_limit = _class_assignment(env_cfg_path, "WheelbipeWywFlatEnvCfg", "max_wheel_vel")
     target_scale = _class_assignment(
         env_cfg_path, "WheelbipeWywFlatEnvCfg", "wheel_vel_action_scale"
     )
     assert target_limit == 60.0
-    assert target_scale == 10.0
+    assert target_scale == 60.0
 
-    # In the unsaturated operating range, the velocity-target adapter computes
-    # exactly the same torque as Fudan's explicit wheel PD expression.
-    actions = torch.tensor([-6.0, -2.0, 0.0, 3.0, 6.0])
-    wheel_vel = torch.tensor([-70.0, -30.0, 1.0, 45.0, 70.0])
-    fudan_torque = torch.clamp(0.2 * (10.0 * actions - wheel_vel), -5.0, 5.0)
+    # A normalized action spans the full protected wheel-target range, and
+    # larger policy outputs remain capped at the same physical velocity.
+    actions = torch.tensor([-2.0, -0.5, 0.0, 0.5, 2.0])
     wyw_target = torch.clamp(target_scale * actions, -target_limit, target_limit)
-    wyw_ideal_pd_torque = torch.clamp(0.2 * (wyw_target - wheel_vel), -5.0, 5.0)
-    assert torch.equal(wyw_ideal_pd_torque, fudan_torque)
+    assert torch.equal(wyw_target, torch.tensor([-60.0, -30.0, 0.0, 30.0, 60.0]))
 
     # Convert the two P19 curve anchors supplied for the C620 to P13.71. The
     # selected 60 rad/s hard cap stays below both converted operating speeds.

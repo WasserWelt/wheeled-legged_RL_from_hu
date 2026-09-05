@@ -13,6 +13,33 @@ from collections.abc import Mapping
 import torch
 
 
+def compute_fdu_action_differences(
+    actions: torch.Tensor,
+    previous_actions: torch.Tensor,
+    before_previous_actions: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Split first and second policy-action differences into leg and wheel channels."""
+    if (
+        actions.shape != previous_actions.shape
+        or actions.shape != before_previous_actions.shape
+        or actions.shape[-1] != 6
+    ):
+        raise ValueError(
+            "FDU action history tensors must have matching shape (...,6), got "
+            f"{actions.shape}, {previous_actions.shape}, and {before_previous_actions.shape}"
+        )
+    delta = actions - previous_actions
+    second_diff = delta - (previous_actions - before_previous_actions)
+    leg_ids = (0, 1, 3, 4)
+    wheel_ids = (2, 5)
+    return (
+        delta[..., leg_ids],
+        delta[..., wheel_ids],
+        second_diff[..., leg_ids],
+        second_diff[..., wheel_ids],
+    )
+
+
 def build_fdu_policy_observation(
     *,
     base_ang_vel: torch.Tensor,
@@ -151,7 +178,9 @@ def compute_fdu_plane_reward_terms(
         if jump
         else torch.clamp(-projected_gravity[:, 2], min=0.0, max=0.7) / 0.7
     )
-    action_second = actions - 2.0 * previous_actions + before_previous_actions
+    leg_action_delta, wheel_action_delta, leg_action_second, _ = compute_fdu_action_differences(
+        actions, previous_actions, before_previous_actions
+    )
     pos_limit_penalty = torch.sum(
         torch.clamp(leg_soft_lower - leg_positions, min=0.0)
         + torch.clamp(leg_positions - leg_soft_upper, min=0.0),
@@ -179,8 +208,11 @@ def compute_fdu_plane_reward_terms(
         "dof_vel": torch.square(joint_vel[:, (0, 1, 3, 4)]).sum(dim=-1),
         "dof_acc": torch.square(joint_acc).sum(dim=-1),
         "torques": torch.square(applied_torque).sum(dim=-1),
-        "action_rate": torch.square(actions - previous_actions).sum(dim=-1),
-        "action_smooth": torch.square(action_second[:, (0, 1, 3, 4)]).sum(dim=-1),
+        "action_rate": (
+            torch.square(leg_action_delta).sum(dim=-1)
+            + torch.square(wheel_action_delta).sum(dim=-1)
+        ),
+        "action_smooth": torch.square(leg_action_second).sum(dim=-1),
         "collision": collision_count,
         "dof_pos_limits": pos_limit_penalty,
     }

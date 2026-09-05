@@ -74,6 +74,10 @@ def _summary(scenario_id: str, value: float, *, failure: str | None = None):
             "tilt_rms_deg": {"min": value, "median": value, "max": value},
             "tilt_peak_deg": {"min": value, "median": value, "max": value},
             "height_rmse_m": {"min": value, "median": value, "max": value},
+            "leg_action_delta_rms": {"min": value, "median": value, "max": value},
+            "wheel_action_delta_rms": {"min": value, "median": value, "max": value},
+            "leg_action_second_diff_rms": {"min": value, "median": value, "max": value},
+            "wheel_action_second_diff_rms": {"min": value, "median": value, "max": value},
             "survival_rate": {"min": 1.0, "median": 1.0, "max": 1.0},
         },
     }
@@ -147,6 +151,34 @@ def test_baseline_comparison_rejects_profile_mismatch_and_missing_metrics():
     del baseline["profiles"]["nominal"]["scenario_summaries"][0]["metrics"]["height_rmse_m"]
     with pytest.raises(ValueError, match="baseline missing metrics"):
         V.validate_baseline_package(baseline)
+
+
+def test_action_smoothness_metrics_are_required_and_lower_is_better():
+    smoothness = {
+        "leg_action_delta_rms",
+        "wheel_action_delta_rms",
+        "leg_action_second_diff_rms",
+        "wheel_action_second_diff_rms",
+    }
+    assert smoothness <= V.required_metrics("flat")
+    assert smoothness <= V.required_metrics("rough")
+    assert smoothness <= V.required_metrics("jump")
+    assert smoothness <= V.LOWER_IS_BETTER
+
+    baseline = V.make_baseline_package(
+        variant="flat",
+        profile_summaries=_all_flat_summaries(0.1),
+        checkpoint="logs/baseline.pt",
+        video="baseline.mp4",
+    )
+    current = _all_flat_summaries(0.1)
+    current["nominal"][0]["metrics"]["wheel_action_second_diff_rms"]["median"] = 0.05
+    result = V.compare_summaries(profile_summaries=current, baseline=baseline)
+    metric = result["profiles"]["nominal"]["scenarios"][0]["metrics"][
+        "wheel_action_second_diff_rms"
+    ]
+    assert metric["pass"]
+    assert metric["delta"] == pytest.approx(-0.05)
 
 
 def test_aggregate_uses_scenario_medians_without_expanding_robust_envs():

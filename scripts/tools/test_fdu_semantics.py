@@ -10,7 +10,7 @@ import pytest
 import torch
 
 
-ROOT = Path(__file__).parents[1]
+ROOT = Path(__file__).parents[2]
 
 
 def _load(name: str, relative_path: str):
@@ -132,6 +132,27 @@ def test_noisy_policy_history_reset_fill_and_roll_timing():
     assert not torch.any(needs_fill)
 
 
+def test_action_differences_split_leg_and_wheel_channels():
+    before_previous = torch.zeros(2, 6)
+    previous = torch.tensor(
+        [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], [0.5, -0.5, 1.0, -1.0, 1.5, -1.5]]
+    )
+    actions = torch.tensor(
+        [[3.0, 5.0, 7.0, 9.0, 11.0, 13.0], [1.5, -1.5, 3.0, -3.0, 4.5, -4.5]]
+    )
+    leg_delta, wheel_delta, leg_second, wheel_second = S.compute_fdu_action_differences(
+        actions, previous, before_previous
+    )
+    delta = actions - previous
+    second = actions - 2.0 * previous + before_previous
+    assert torch.equal(leg_delta, delta[:, (0, 1, 3, 4)])
+    assert torch.equal(wheel_delta, delta[:, (2, 5)])
+    assert torch.equal(leg_second, second[:, (0, 1, 3, 4)])
+    assert torch.equal(wheel_second, second[:, (2, 5)])
+    with pytest.raises(ValueError, match="matching shape"):
+        S.compute_fdu_action_differences(actions[:, :5], previous[:, :5], before_previous[:, :5])
+
+
 def test_plane_raw_reward_formulas_match_fixed_fudan_fixture():
     f = _reward_fixture()
     terms = S.compute_fdu_plane_reward_terms(**f)
@@ -146,7 +167,7 @@ def test_plane_raw_reward_formulas_match_fixed_fudan_fixture():
         "tracking_ang_vel": torch.exp(-yaw_err / sigma) * tracking_gate,
         "tracking_ang_vel_enhance": torch.exp(-yaw_err / sigma / 10) - 1,
         "base_height": (
-            torch.exp(-(f["observed_height"] - f["height_command"]).square() / 0.001)
+            torch.exp(-(f["observed_height"] - f["height_command"]).square() / 0.004)
             * tracking_gate
         ),
         "upright_orientation": torch.exp(

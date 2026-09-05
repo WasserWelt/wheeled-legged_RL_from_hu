@@ -250,8 +250,8 @@ def _write_baseline_comparison_video(
     command = [
         "ffmpeg", "-y", "-loglevel", "error", "-i", str(baseline_video), "-i", str(current_video),
         "-filter_complex",
-        "[0:v]setpts=PTS-STARTPTS,drawtext=text='BASELINE':x=24:y=120:fontsize=28:fontcolor=yellow:box=1:boxcolor=black@0.55[left];"
-        "[1:v]setpts=PTS-STARTPTS,drawtext=text='CURRENT':x=24:y=120:fontsize=28:fontcolor=cyan:box=1:boxcolor=black@0.55[right];"
+        "[0:v]setpts=PTS-STARTPTS,drawtext=text='BASELINE':x=24:y=h-th-24:fontsize=28:fontcolor=yellow:box=1:boxcolor=black@0.55[left];"
+        "[1:v]setpts=PTS-STARTPTS,drawtext=text='CURRENT':x=24:y=h-th-24:fontsize=28:fontcolor=cyan:box=1:boxcolor=black@0.55[right];"
         "[left][right]hstack=inputs=2:shortest=1[v]",
         "-map", "[v]", "-r", str(VIDEO_FPS), "-c:v", "libx264", "-pix_fmt", "yuv420p",
         str(output),
@@ -301,7 +301,8 @@ def _write_comparison_chart(
         else:
             relative_current.append(100.0 * current_value / abs(baseline_value))
 
-    fig = plt.figure(figsize=(13.5, 7.6), facecolor="white")
+    figure_height = max(7.6, 2.4 + 0.46 * len(metrics))
+    fig = plt.figure(figsize=(13.5, figure_height), facecolor="white")
     grid = fig.add_gridspec(2, 1, height_ratios=(1.15, 5.0), hspace=0.18)
     header = fig.add_subplot(grid[0])
     header.axis("off")
@@ -373,7 +374,13 @@ def _write_comparison_chart(
         axis.text(x_text, index - height / 2, baseline_text, ha="right", va="center", fontsize=9, color=baseline_color)
         axis.text(x_text, index + height / 2, f"{current_text}  ({change_text})", ha="right", va="center", fontsize=9, color=color, weight="bold")
 
-    fig.text(0.012, 0.012, "Lower is better for RMSE/tilt; higher is better for survival and task outcomes.", fontsize=9, color="#6B7280")
+    fig.text(
+        0.012,
+        0.012,
+        "Lower is better for tracking error, tilt and action variation; higher is better for survival and task outcomes.",
+        fontsize=9,
+        color="#6B7280",
+    )
     path = output_dir / "comparison.png"
     fig.savefig(path, dpi=160, bbox_inches="tight", facecolor=pale)
     plt.close(fig)
@@ -573,6 +580,10 @@ from agent_tasks.direct.wheelbipe.wyw.rough_cfg import (  # noqa: E402
     FDU_ROUGH_VERIFY_TERRAIN_CFG,
     fdu_verify_terrain_columns,
 )
+from agent_tasks.direct.wheelbipe.wyw import wyw_constants as C  # noqa: E402
+from agent_tasks.direct.wheelbipe.wyw.fdu_semantics import (  # noqa: E402
+    compute_fdu_action_differences,
+)
 
 
 def _nested(mapping: dict[str, Any], *keys: str) -> Any:
@@ -740,7 +751,14 @@ class _VideoRecorder:
         self.writer = None
         self.accumulator = 0.0
 
-    def capture(self, scenario, phase: str, elapsed: float, active: int) -> None:
+    def capture(
+        self,
+        scenario,
+        phase: str,
+        elapsed: float,
+        active: int,
+        actions: torch.Tensor,
+    ) -> None:
         import cv2
 
         self.accumulator += VIDEO_FPS * float(self.raw.step_dt)
@@ -757,22 +775,40 @@ class _VideoRecorder:
         if frame.shape[-1] == 4:
             frame = frame[..., :3]
         frame = np.ascontiguousarray(frame)
-        lines = (
-            f"WYW {scenario.variant.upper()} / {scenario.profile.upper()}",
-            scenario.id,
-            f"{phase}  t={elapsed:5.2f}s  active={active}/{self.raw.num_envs}",
+        command = (
+            float(self.raw.command[0, 0].item()),
+            float(self.raw.command[0, 2].item()),
+            float(self.raw._get_observation_height_cmd()[0].item()),
         )
-        for line_index, line in enumerate(lines):
-            cv2.putText(
-                frame,
-                line,
-                (24, 36 + 30 * line_index),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
+        action = actions[0].detach().cpu().tolist()
+        line_columns = (
+            (
+                f"WYW {scenario.variant.upper()} / {scenario.profile.upper()}",
+                scenario.id,
+                f"{phase}  t={elapsed:5.2f}s  active={active}/{self.raw.num_envs}",
+            ),
+            (
+                f"cmd   vx={command[0]:+5.2f} yaw={command[1]:+5.2f} h={command[2]:.3f}",
+                f"act L lf0={action[0]:+6.3f} l20={action[1]:+6.3f} whl={action[2]:+6.3f}",
+                f"act R rf0={action[3]:+6.3f} r20={action[4]:+6.3f} whl={action[5]:+6.3f}",
+            ),
+        )
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (12, 10), (frame.shape[1] - 12, 110), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.58, frame, 0.42, 0.0, frame)
+        for column_index, lines in enumerate(line_columns):
+            x = 24 if column_index == 0 else frame.shape[1] // 2
+            for line_index, line in enumerate(lines):
+                cv2.putText(
+                    frame,
+                    line,
+                    (x, 34 + 31 * line_index),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.54,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
         if self.writer is None:
             self.writer = _open_video_writer(self.path, VIDEO_FPS)
         # cv2.putText drew on the RGB array above; the H.264 writer expects RGB.
@@ -840,10 +876,15 @@ def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[d
                 reasons[index] = "non_finite_action"
             actions = torch.where(torch.isfinite(actions), actions, torch.zeros_like(actions))
             actions[~active] = 0.0
+            applied_actions = actions
+            if env.clip_actions is not None:
+                applied_actions = torch.clamp(
+                    actions, -float(env.clip_actions), float(env.clip_actions)
+                )
             before = _state_metrics(raw, scenario.variant, scenario)
             state_finite = torch.stack([torch.isfinite(value) for value in before.values()]).all(dim=0)
             finite[was_active] &= state_finite[was_active]
-            obs, rewards, dones, extras = env.step(actions)
+            obs, rewards, dones, extras = env.step(applied_actions)
             step_finite = torch.isfinite(rewards)
             if hasattr(obs, "values"):
                 for value in obs.values():
@@ -856,9 +897,15 @@ def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[d
                     survived[index] = False
                     active[index] = False
                     reasons[index] = reason
-            recorder.capture(scenario, phase, elapsed, int(active.sum().item()))
+            recorder.capture(
+                scenario,
+                phase,
+                elapsed,
+                int(active.sum().item()),
+                applied_actions,
+            )
             after = _state_metrics(raw, scenario.variant, scenario)
-            return before, after, rewards
+            return before, after, rewards, applied_actions
 
     settle_steps = int(round(scenario.settle_s / raw.step_dt))
     for step in range(settle_steps):
@@ -874,7 +921,20 @@ def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[d
         "yaw": torch.zeros(num_envs, device=raw.device),
         "tilt": torch.zeros(num_envs, device=raw.device),
         "height": torch.zeros(num_envs, device=raw.device),
+        "leg_action_delta": torch.zeros(num_envs, device=raw.device),
+        "wheel_action_delta": torch.zeros(num_envs, device=raw.device),
+        "leg_action_second_diff": torch.zeros(num_envs, device=raw.device),
+        "wheel_action_second_diff": torch.zeros(num_envs, device=raw.device),
     }
+    action_counts = {
+        "delta": torch.zeros(num_envs, device=raw.device),
+        "second_diff": torch.zeros(num_envs, device=raw.device),
+    }
+    # Keep the command step out of the jitter score by starting action history
+    # at the score-window boundary.
+    action_steps = torch.zeros(num_envs, dtype=torch.long, device=raw.device)
+    previous_score_actions = torch.zeros(num_envs, C.WYW_ACTION_DIM, device=raw.device)
+    before_previous_score_actions = torch.zeros_like(previous_score_actions)
     tilt_peak = torch.zeros(num_envs, device=raw.device)
     counts = torch.zeros(num_envs, device=raw.device)
     completed = torch.zeros(num_envs, dtype=torch.bool, device=raw.device)
@@ -900,13 +960,40 @@ def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[d
     score_steps = int(round(scenario.score_s / raw.step_dt))
     for step in range(score_steps):
         scoring = active.clone()
-        state, after_state, _ = advance("score", (step + 1) * raw.step_dt)
+        state, after_state, _, actions = advance("score", (step + 1) * raw.step_dt)
         sums["vx"][scoring] += torch.square(state["vx"][scoring] - scenario.vx)
         sums["yaw"][scoring] += torch.square(state["yaw"][scoring] - scenario.yaw)
         sums["tilt"][scoring] += torch.square(state["tilt"][scoring])
         sums["height"][scoring] += torch.square(state["height"][scoring] - scenario.height)
         tilt_peak[scoring] = torch.maximum(tilt_peak[scoring], state["tilt"][scoring])
         counts[scoring] += 1
+
+        has_previous = scoring & (action_steps >= 1)
+        leg_delta, wheel_delta, leg_second_diff, wheel_second_diff = (
+            compute_fdu_action_differences(
+                actions, previous_score_actions, before_previous_score_actions
+            )
+        )
+        sums["leg_action_delta"][has_previous] += torch.square(
+            leg_delta[has_previous]
+        ).sum(dim=-1)
+        sums["wheel_action_delta"][has_previous] += torch.square(
+            wheel_delta[has_previous]
+        ).sum(dim=-1)
+        action_counts["delta"][has_previous] += 1
+
+        has_two_previous = scoring & (action_steps >= 2)
+        sums["leg_action_second_diff"][has_two_previous] += torch.square(
+            leg_second_diff[has_two_previous]
+        ).sum(dim=-1)
+        sums["wheel_action_second_diff"][has_two_previous] += torch.square(
+            wheel_second_diff[has_two_previous]
+        ).sum(dim=-1)
+        action_counts["second_diff"][has_two_previous] += 1
+
+        before_previous_score_actions[scoring] = previous_score_actions[scoring]
+        previous_score_actions[scoring] = actions[scoring]
+        action_steps[scoring] += 1
 
         if scenario.variant == "rough":
             displacement = raw.robot.data.root_pos_w[:, :2] - starts_xy
@@ -962,6 +1049,34 @@ def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[d
                     "tilt_rms_deg": math.sqrt(float(sums["tilt"][index].item()) / count),
                     "tilt_peak_deg": float(tilt_peak[index].item()),
                     "height_rmse_m": math.sqrt(float(sums["height"][index].item()) / count),
+                }
+            )
+        delta_count = float(action_counts["delta"][index].item())
+        if delta_count > 0:
+            sample.update(
+                {
+                    "leg_action_delta_rms": math.sqrt(
+                        float(sums["leg_action_delta"][index].item())
+                        / (delta_count * len(C.WYW_LEG_ACTION_IDS))
+                    ),
+                    "wheel_action_delta_rms": math.sqrt(
+                        float(sums["wheel_action_delta"][index].item())
+                        / (delta_count * len(C.WYW_WHEEL_ACTION_IDS))
+                    ),
+                }
+            )
+        second_diff_count = float(action_counts["second_diff"][index].item())
+        if second_diff_count > 0:
+            sample.update(
+                {
+                    "leg_action_second_diff_rms": math.sqrt(
+                        float(sums["leg_action_second_diff"][index].item())
+                        / (second_diff_count * len(C.WYW_LEG_ACTION_IDS))
+                    ),
+                    "wheel_action_second_diff_rms": math.sqrt(
+                        float(sums["wheel_action_second_diff"][index].item())
+                        / (second_diff_count * len(C.WYW_WHEEL_ACTION_IDS))
+                    ),
                 }
             )
         if scenario.variant == "rough":
