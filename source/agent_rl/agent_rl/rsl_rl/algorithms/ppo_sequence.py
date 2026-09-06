@@ -366,6 +366,16 @@ class PPOSequence:
         diagnostics.update(stats("target", target))
         diagnostics.update(stats("latent", prediction))
         diagnostics.update(stats("error", error))
+        for axis, axis_name in enumerate(("vx", "vy", "vz")):
+            axis_target = target[:, axis].float()
+            axis_prediction = prediction[:, axis].float()
+            axis_error = error[:, axis].float()
+            diagnostics[f"encoder_{axis_name}_target_mean"] = float(axis_target.mean().item())
+            diagnostics[f"encoder_{axis_name}_latent_mean"] = float(axis_prediction.mean().item())
+            diagnostics[f"encoder_{axis_name}_bias"] = float(axis_error.mean().item())
+            diagnostics[f"encoder_{axis_name}_rmse"] = float(
+                torch.sqrt(torch.mean(axis_error.square())).item()
+            )
         diagnostics["encoder_nonterminal_mse"] = float(
             error[~done].float().square().mean().item()
         ) if torch.any(~done) else 0.0

@@ -101,6 +101,10 @@ def test_sequence_encoder_receives_done_mask_and_emits_distribution_diagnostics(
     assert 'f"encoder_{prefix}_rms"' in algorithm_source
     assert 'f"encoder_{prefix}_p99_abs"' in algorithm_source
     assert 'f"encoder_{prefix}_max_abs"' in algorithm_source
+    assert 'diagnostics[f"encoder_{axis_name}_target_mean"]' in algorithm_source
+    assert 'diagnostics[f"encoder_{axis_name}_latent_mean"]' in algorithm_source
+    assert 'diagnostics[f"encoder_{axis_name}_bias"]' in algorithm_source
+    assert 'diagnostics[f"encoder_{axis_name}_rmse"]' in algorithm_source
     assert 'diagnostics["encoder_terminal_mse"]' in algorithm_source
     assert "dones_batch" in storage_source
 
