@@ -180,10 +180,12 @@ class WheelbipeWywPPORunnerCfg(SequencePPORunnerCfg):
     clip_actions = 100.0
     algorithm = {
         **SEQUENCE_PPO_ALGORITHM_CFG,
-        "extra_learning_rate": 1.0e-4,
-        "encoder_loss": "smooth_l1",
-        "encoder_huber_delta": 1.0,
-        "encoder_exclude_terminal": True,
+        # Match the original Fudan encoder supervision contract: plain MSE
+        # over every transition, including the valid pre-step state whose
+        # resulting transition terminates the episode.
+        "extra_learning_rate": 1.0e-3,
+        "encoder_loss": "mse",
+        "encoder_exclude_terminal": False,
     }
 
 

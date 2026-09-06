@@ -1,6 +1,6 @@
 # WYW FDU 当前配置表
 
-> 更新时间：2026-08-31。本文是当前代码的配置快照，不是设计草案。
+> 更新时间：2026-09-06。本文是当前代码的配置快照，不是设计草案。
 > 源码（尤其是 `wyw/env_cfg.py`、`wyw/env.py`、`wyw/fdu_semantics.py`、
 > `agent_world/assets/wheelbipe_fdu.py`）是最终权威；本表用于人工审计和复现实验。
 > “源码默认值”和“云端本次训练覆盖值”分开记录，避免把一次实验参数误当成永久配置。
@@ -226,8 +226,8 @@ Jump 另行放宽 runner 动作裁剪范围：
 | orthogonal init                         | `False`                                                              |
 | value coef / clipped value / clip param | `1` / `True` / `.2`                                              |
 | entropy / epochs / minibatches          | `.01` / `5` / `4`                                                |
-| policy LR / encoder LR                  | `1e-3` / `1e-4`                                                    |
-| encoder loss                            | Smooth L1（Huber delta `1.0`），排除 terminal 样本                    |
+| policy LR / encoder LR                  | `1e-3` / `1e-3`                                                    |
+| encoder loss                            | MSE，全部 transition 参与监督（包括 terminal transition）             |
 | runner action clip                      | Flat/Rough `±1`；Jump `±100`                                        |
 | schedule / gamma / lambda               | adaptive /`.99` / `.95`                                            |
 | desired KL / max grad norm              | `.005` / `1`                                                       |
