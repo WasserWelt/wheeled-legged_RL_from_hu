@@ -465,7 +465,13 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     max_wheel_vel = 60.0
     # Persist the active action/reward/termination contract in params/env.yaml
     # for run auditing. Checkpoint compatibility remains an operator decision.
-    wyw_training_semantics_version = "fdu_flat_p0_direct_bars_v1"
+    wyw_training_semantics_version = "fdu_flat_p0_direct_bars_fd_vel_v2"
+    # Fudan derives all six policy-joint velocities from wrapped encoder
+    # position differences at every 500 Hz physics step. This changes the
+    # checkpoint observation/control contract and must not resume v1 runs.
+    wyw_joint_velocity_source = "wrapped_position_difference"
+    wyw_joint_velocity_diff_dt = 0.002
+    wyw_joint_velocity_wrap_to_pi = True
     termination_duration_enabled = True
     termination_duration_steps = 100
     # Fudan Plane treats all non-wheel leg links plus the base as the

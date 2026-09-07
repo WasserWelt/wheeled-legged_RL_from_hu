@@ -28,9 +28,8 @@ import math
 
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg
-from isaaclab.actuators import IdealPDActuatorCfg
-
 from agent_world import AssetPath
+from agent_world.actuators import DiffVelPDActuatorCfg
 
 
 # Exact vertical equivalent-leg solution for infantry_V2.urdf:
@@ -81,25 +80,29 @@ Wheelbipe_FDU_CFG = ArticulationCfg(
     ),
     actuators={
         # Four entity motors: front and rear driven bar on each closed-chain leg.
-        "legs_act": IdealPDActuatorCfg(
+        "legs_act": DiffVelPDActuatorCfg(
             joint_names_expr=["lf0_Joint", "l20_Joint", "rf0_Joint", "r20_Joint"],
             stiffness=20.0,
             damping=1.0,
             effort_limit=40.0,
             velocity_limit=30.0,
             armature=0.0,
+            diff_dt=0.002,
+            wrap_to_pi=True,
         ),
         # passive linkage joints (front knee + rear 3-bar); the loop constraints
         # determine their motion, so no drive -- just a whisker of damping.
-        "legs_inact": IdealPDActuatorCfg(
+        "legs_inact": DiffVelPDActuatorCfg(
             joint_names_expr=["rf1_Joint", "lf1_Joint", "r2[123]_Joint", "l2[123]_Joint"],
             stiffness=0.0,
             damping=0.01,
             effort_limit=50.0,
             velocity_limit=300.0,
             armature=0.0001,
+            diff_dt=0.002,
+            wrap_to_pi=True,
         ),
-        "wheel": IdealPDActuatorCfg(
+        "wheel": DiffVelPDActuatorCfg(
             joint_names_expr=[".*_wheel_Joint"],
             stiffness=0.0,
             damping=0.2,
@@ -113,6 +116,8 @@ Wheelbipe_FDU_CFG = ArticulationCfg(
             velocity_limit=60.0,
             velocity_limit_sim=60.0,
             armature=0.0,
+            diff_dt=0.002,
+            wrap_to_pi=True,
         ),
     },
 )

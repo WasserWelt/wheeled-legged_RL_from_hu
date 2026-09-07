@@ -67,6 +67,30 @@ def test_training_enables_initial_episode_length_randomization():
     assert isinstance(keyword.value, ast.Constant) and keyword.value.value is True
 
 
+def test_wyw_resume_validates_semantics_before_loading_checkpoint():
+    path = ROOT / "scripts/rsl_rl/train.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+    validation_line = min(
+        node.lineno
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_validate_checkpoint_training_semantics"
+    )
+    load_line = min(
+        node.lineno
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call)
+        and _attribute_path(node.func) == ("runner", "load")
+    )
+    assert validation_line < load_line
+
+    source = path.read_text(encoding="utf-8")
+    assert "checkpoint training semantics mismatch" in source
+    assert "Start a new run from iteration 0" in source
+
+
 def test_sequence_runner_owns_compact_tensorboard_routing_and_console_filter():
     path = ROOT / "source/agent_rl/agent_rl/rsl_rl/runners/on_policy_sequence_runner.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))

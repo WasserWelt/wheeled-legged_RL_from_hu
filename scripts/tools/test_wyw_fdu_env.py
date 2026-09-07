@@ -82,7 +82,9 @@ def main():
         assert not hasattr(env.cfg, "wyw_safe_theta0_abs")
         assert env.cfg.termination_duration_enabled is True
         assert env.cfg.termination_duration_steps == 100
-        assert env.cfg.wyw_training_semantics_version == "fdu_flat_p0_direct_bars_v1"
+        assert env.cfg.wyw_training_semantics_version == "fdu_flat_p0_direct_bars_fd_vel_v2"
+        assert env.cfg.wyw_joint_velocity_source == "wrapped_position_difference"
+        assert env.cfg.wyw_joint_velocity_diff_dt == env.cfg.sim.dt == 0.002
         assert env.cfg.wyw_collision_contact_force == 0.1
         assert env.cfg.wyw_failure_contact_force == 10.0
         expected_failure_contact_bodies = {
@@ -119,8 +121,12 @@ def main():
         expected_leg_pd = (6.0, 0.5) if args_cli.variant == "jump" else (20.0, 1.0)
         assert env.robot.cfg.actuators["legs_act"].stiffness == expected_leg_pd[0]
         assert env.robot.cfg.actuators["legs_act"].damping == expected_leg_pd[1]
-        assert env.robot.cfg.spawn.articulation_props.solver_position_iteration_count == 16
-        assert env.robot.cfg.spawn.articulation_props.solver_velocity_iteration_count == 6
+        assert all(
+            actuator.cfg.class_type.__name__ == "DiffVelPDActuator"
+            for actuator in env.robot.actuators.values()
+        )
+        assert env.robot.cfg.spawn.articulation_props.solver_position_iteration_count == 8
+        assert env.robot.cfg.spawn.articulation_props.solver_velocity_iteration_count == 4
         assert env.cfg.wyw_l0_stability_monitor_enabled is True
         assert env.cfg.wyw_l0_stability_boundary_m == 0.14
         assert env.cfg.commands.heading_command is False
@@ -144,6 +150,9 @@ def main():
             assert proportions == [0.20, 0.10, 0.10, 0.10, 0.10, 0.10, 0.20, 0.10]
         expected_command_period = (20.0, 20.0) if args_cli.variant == "jump" else (5.0, 5.0)
         assert tuple(env.cfg.commands.resampling_time_range) == expected_command_period
+        # Disable actor-only noise so this smoke can compare observation slices
+        # against the exact runtime finite-difference state.
+        env.use_self_obs_noise = False
         obs, _ = env.reset()
         assert torch.all(env.height_cmd >= 0.15) and torch.all(env.height_cmd <= 0.30)
         assert obs["policy"].shape == (n, 25)
@@ -167,14 +176,159 @@ def main():
         # Action-history contract in critic: after reset [a_{t-1},a_{t-2}]=0;
         # on the second observation it must contain [a_1,0], not [a_2,a_1].
         assert torch.count_nonzero(obs["critic"][:, 28:40]) == 0
+
+        env_velocity_samples = []
+        original_velocity_update = env._wyw_joint_velocity_estimator.update
+
+        def record_env_velocity(position, *, sample_id=None):
+            previous_position = env._wyw_joint_velocity_estimator.previous_position.clone()
+            previous_sample_id = env._wyw_joint_velocity_estimator.last_sample_id
+            velocity = original_velocity_update(position, sample_id=sample_id)
+            env_velocity_samples.append(
+                {
+                    "sample_id": sample_id,
+                    "fresh": sample_id != previous_sample_id,
+                    "position": position.clone(),
+                    "previous_position": previous_position,
+                    "velocity": velocity.clone(),
+                }
+            )
+            return velocity
+
+        env._wyw_joint_velocity_estimator.update = record_env_velocity
+
+        actuator_samples = {name: [] for name in env.robot.actuators}
+        for actuator_name, actuator in env.robot.actuators.items():
+            original_compute = actuator.compute
+
+            def record_actuator_compute(
+                control_action,
+                joint_pos,
+                joint_vel,
+                *,
+                _name=actuator_name,
+                _actuator=actuator,
+                _compute=original_compute,
+            ):
+                position_target = control_action.joint_positions.clone()
+                velocity_target = control_action.joint_velocities.clone()
+                feedforward = control_action.joint_efforts.clone()
+                output = _compute(control_action, joint_pos, joint_vel)
+                actuator_samples[_name].append(
+                    {
+                        "position": joint_pos.clone(),
+                        "raw_velocity": joint_vel.clone(),
+                        "position_target": position_target,
+                        "velocity_target": velocity_target,
+                        "feedforward": feedforward,
+                        "fd_velocity": _actuator._velocity_estimator.velocity.clone(),
+                        "computed_effort": _actuator.computed_effort.clone(),
+                    }
+                )
+                return output
+
+            actuator.compute = record_actuator_compute
+
+        velocity_before_step = env._wyw_joint_velocity.clone()
         action_1 = torch.linspace(-0.3, 0.3, 6, device=env.device).repeat(n, 1)
         obs, reward, terminated, truncated, _ = env.step(action_1)
+        assert not torch.any(terminated | truncated)
+
+        # DirectRLEnv increments the simulation counter before _apply_action.
+        # The five fresh states must therefore be sample ids 1..5, with id 5
+        # captured after the final PhysX substep for observations/rewards.
+        fresh_samples = [sample for sample in env_velocity_samples if sample["fresh"]]
+        assert [sample["sample_id"] for sample in fresh_samples] == [1, 2, 3, 4, 5]
+        for sample in fresh_samples:
+            delta = torch.atan2(
+                torch.sin(sample["position"] - sample["previous_position"]),
+                torch.cos(sample["position"] - sample["previous_position"]),
+            )
+            torch.testing.assert_close(
+                sample["velocity"], delta / env.cfg.wyw_joint_velocity_diff_dt
+            )
+        torch.testing.assert_close(
+            env._wyw_joint_velocity_estimator.previous_position,
+            env.robot.data.joint_pos[:, env._wyw_policy_joint_idx],
+        )
+
+        expected_scaled_velocity = env._wyw_joint_velocity * env.cfg.wyw_dof_vel_scale
+        torch.testing.assert_close(obs["policy"][:, 13:19], expected_scaled_velocity)
+        torch.testing.assert_close(obs["policy_hist"].reshape(n, 5, 25)[:, -1, 13:19], expected_scaled_velocity)
+        torch.testing.assert_close(obs["critic"][:, 16:22], expected_scaled_velocity)
+        expected_acceleration = (velocity_before_step - env._wyw_joint_velocity) / env.step_dt
+        torch.testing.assert_close(env._wyw_policy_joint_acceleration, expected_acceleration)
+        torch.testing.assert_close(
+            obs["critic"][:, 40:46], expected_acceleration * env.cfg.wyw_joint_acc_scale
+        )
+        raw_reward_terms = env._compute_fdu_reward_terms()
+        expected_dof_vel_reward = torch.square(
+            env._wyw_joint_velocity[:, [0, 1, 3, 4]]
+        ).sum(dim=-1)
+        torch.testing.assert_close(raw_reward_terms["dof_vel"], expected_dof_vel_reward)
+
+        # The real articulation called every actuator exactly once per 2 ms
+        # substep. Its computed torque must use the estimator velocity even
+        # when the PhysX generalized velocity differs.
+        saw_raw_velocity_difference = False
+        for actuator_name, actuator in env.robot.actuators.items():
+            records = actuator_samples[actuator_name]
+            assert len(records) == env.cfg.decimation
+            assert torch.count_nonzero(records[0]["fd_velocity"]) == 0
+            for previous, current in zip(records, records[1:]):
+                delta = torch.atan2(
+                    torch.sin(current["position"] - previous["position"]),
+                    torch.cos(current["position"] - previous["position"]),
+                )
+                torch.testing.assert_close(
+                    current["fd_velocity"], delta / env.cfg.wyw_joint_velocity_diff_dt
+                )
+            final = records[-1]
+            nominal_effort = (
+                actuator.stiffness * (final["position_target"] - final["position"])
+                + actuator.damping * (final["velocity_target"] - final["fd_velocity"])
+                + final["feedforward"]
+            )
+            output_scale = getattr(
+                actuator, "_wb_effort_output_scale", torch.ones_like(nominal_effort)
+            )
+            output_bias = getattr(
+                actuator, "_wb_effort_output_bias", torch.zeros_like(nominal_effort)
+            )
+            output_noise_std = getattr(
+                actuator, "_wb_effort_output_noise_std", torch.zeros_like(nominal_effort)
+            )
+            assert torch.count_nonzero(output_noise_std) == 0
+            expected_effort = nominal_effort * output_scale + output_bias
+            if not torch.allclose(final["computed_effort"], expected_effort):
+                print(
+                    f"[FDVelDebug:{actuator_name}] "
+                    f"max_effort_error={float(torch.max(torch.abs(final['computed_effort'] - expected_effort))):.6f}\n"
+                    f"stiffness={actuator.stiffness[0].detach().cpu().tolist()}\n"
+                    f"damping={actuator.damping[0].detach().cpu().tolist()}\n"
+                    f"q={final['position'][0].detach().cpu().tolist()}\n"
+                    f"q_target={final['position_target'][0].detach().cpu().tolist()}\n"
+                    f"fd_vel={final['fd_velocity'][0].detach().cpu().tolist()}\n"
+                    f"raw_vel={final['raw_velocity'][0].detach().cpu().tolist()}\n"
+                    f"vel_target={final['velocity_target'][0].detach().cpu().tolist()}\n"
+                    f"feedforward={final['feedforward'][0].detach().cpu().tolist()}\n"
+                    f"computed={final['computed_effort'][0].detach().cpu().tolist()}\n"
+                    f"expected={expected_effort[0].detach().cpu().tolist()}",
+                    flush=True,
+                )
+            torch.testing.assert_close(final["computed_effort"], expected_effort)
+            saw_raw_velocity_difference |= bool(
+                torch.any(torch.abs(final["raw_velocity"] - final["fd_velocity"]) > 1.0e-3)
+            )
+        assert saw_raw_velocity_difference
+
         expected_leg_targets = (
             env.robot.data.default_joint_pos[:, env._wyw_leg_joint_idx]
             + env.leg_action_scale * action_1[:, [0, 1, 3, 4]]
         )
         assert torch.allclose(env.leg_actions, expected_leg_targets)
         assert torch.count_nonzero(obs["critic"][:, 28:40]) == 0
+
         action_2 = -action_1
         obs, reward, terminated, truncated, _ = env.step(action_2)
         assert torch.allclose(obs["critic"][:, 28:34], action_1)
@@ -185,6 +339,24 @@ def main():
             assert torch.isfinite(obs["policy_hist"]).all()
             assert torch.isfinite(obs["critic"]).all()
             assert torch.isfinite(reward).all()
+
+        # Articulation.reset() must invalidate only the selected actuator rows;
+        # WYW primes its observation estimator from the newly written qpos.
+        reset_id = torch.tensor([0], device=env.device)
+        env._reset_idx(reset_id)
+        assert torch.count_nonzero(env._wyw_joint_velocity[reset_id]) == 0
+        assert bool(env._wyw_joint_velocity_estimator.initialized[reset_id].all())
+        for actuator in env.robot.actuators.values():
+            assert not bool(actuator._velocity_estimator.initialized[reset_id].any())
+            assert bool(actuator._velocity_estimator.initialized[1:].all())
+        previous_record_counts = {
+            name: len(records) for name, records in actuator_samples.items()
+        }
+        obs, reward, terminated, truncated, _ = env.step(torch.zeros(n, 6, device=env.device))
+        for actuator_name, records in actuator_samples.items():
+            first_after_reset = records[previous_record_counts[actuator_name]]
+            assert torch.count_nonzero(first_after_reset["fd_velocity"][reset_id]) == 0
+
         expected_rewards = FDU_JUMP_REWARDS if args_cli.variant == "jump" else FDU_PLANE_REWARDS
         assert list(env.cfg.rewards) == list(expected_rewards)
         assert set(env._last_reward_terms) == set(expected_rewards)
@@ -205,7 +377,9 @@ def main():
             dump_yaml(str(env_yaml), env.cfg)
             dumped = env_yaml.read_text(encoding="utf-8")
             for required in (
-                "wyw_training_semantics_version: fdu_flat_p0_direct_bars_v1",
+                "wyw_training_semantics_version: fdu_flat_p0_direct_bars_fd_vel_v2",
+                "wyw_joint_velocity_source: wrapped_position_difference",
+                "wyw_joint_velocity_diff_dt: 0.002",
                 "wyw_failure_contact_force: 10.0",
                 "wyw_collision_contact_force: 0.1",
                 "wyw_flat_command_curriculum_enabled:",
@@ -226,9 +400,20 @@ def main():
             env._episode_sums["tracking_lin_vel"].fill_(0.71 * env.max_episode_length_s)
             env._episode_sums["tracking_ang_vel"].fill_(0.57 * env.max_episode_length_s)
             env._reset_idx(torch.arange(n, device=env.device))
+            expected_expanded_ranges = saved_ranges.clone()
+            expected_expanded_ranges[:, 0] = torch.clamp(
+                expected_expanded_ranges[:, 0] - env.cfg.wyw_command_curriculum_step,
+                min=-env.cfg.wyw_command_curriculum_max_abs,
+                max=0.0,
+            )
+            expected_expanded_ranges[:, 1] = torch.clamp(
+                expected_expanded_ranges[:, 1] + env.cfg.wyw_command_curriculum_step,
+                min=0.0,
+                max=env.cfg.wyw_command_curriculum_max_abs,
+            )
             assert torch.allclose(
                 env._wyw_command_ranges_x,
-                torch.tensor([[-2.1, 2.1]], device=env.device).repeat(n, 1),
+                expected_expanded_ranges,
             )
             assert env.extras["log"]["Curriculum/FDUFlat/expanded"] == 1
             assert env.extras["log"]["Curriculum/FDUFlat/cadence_step"] == interval
@@ -243,7 +428,7 @@ def main():
             env._update_fdu_flat_command_curriculum(torch.arange(n, device=env.device))
             assert torch.allclose(
                 env._wyw_command_ranges_x,
-                torch.tensor([[-2.1, 2.1]], device=env.device).repeat(n, 1),
+                expected_expanded_ranges,
             )
             env.common_step_counter = saved_step
             env._wyw_command_ranges_x.copy_(saved_ranges)

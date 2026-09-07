@@ -90,6 +90,9 @@ import gymnasium as gym
 import os
 import torch
 from datetime import datetime
+from pathlib import Path
+
+import yaml
 
 from isaaclab.envs import (
     DirectMARLEnv,
@@ -188,6 +191,25 @@ def _attach_checkpoint_metadata(env_cfg, agent_cfg, checkpoint_path: str | None)
     setattr(agent_cfg, "launch_checkpoint", checkpoint_metadata)
 
 
+def _validate_checkpoint_training_semantics(env_cfg, checkpoint_path: str) -> None:
+    """Reject resume when a versioned task's saved environment contract differs."""
+    expected = getattr(env_cfg, "wyw_training_semantics_version", None)
+    if expected is None:
+        return
+    env_path = Path(checkpoint_path).resolve().parent / "params" / "env.yaml"
+    if not env_path.is_file():
+        raise ValueError(
+            f"cannot resume versioned WYW checkpoint without metadata: {env_path}"
+        )
+    metadata = yaml.load(env_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    actual = metadata.get("wyw_training_semantics_version") if isinstance(metadata, dict) else None
+    if actual != expected:
+        raise ValueError(
+            "checkpoint training semantics mismatch: "
+            f"checkpoint={actual!r}, current={expected!r}. Start a new run from iteration 0."
+        )
+
+
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """Train with RSL-RL agent."""
@@ -265,6 +287,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         if args_cli.resume_training:
             # True continuation: restore optimizer/iteration and continue from the next iteration index.
+            _validate_checkpoint_training_semantics(env_cfg, resume_path)
             load_signature = inspect.signature(runner.load)
             if "load_iteration" in load_signature.parameters:
                 runner.load(resume_path, load_optimizer=True, load_iteration=True)

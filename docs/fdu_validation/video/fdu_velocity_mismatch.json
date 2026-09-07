@@ -1,0 +1,54 @@
+{
+  "video": "/home/wyw/my_tasks/RL_2026/wheeled-legged_RL_from_hu/docs/fdu_validation/video/fdu_velocity_mismatch.mp4",
+  "csv": "/home/wyw/my_tasks/RL_2026/wheeled-legged_RL_from_hu/docs/fdu_validation/video/fdu_velocity_mismatch.csv",
+  "environment": "Wheelbipe_FDU_CFG, fixed root, one env, no checkpoint",
+  "physics_dt_s": 0.002,
+  "decimation": 1,
+  "solver_iterations": [
+    8,
+    4
+  ],
+  "samples": 2001,
+  "worst": {
+    "joint": "l20_Joint",
+    "sample": 76,
+    "time_s": 0.152,
+    "fd_rad_s": -20.790098190307617,
+    "physx_rad_s": -5.538848876953125,
+    "difference_rad_s": -15.251249313354492,
+    "delta_q_mrad": -41.5802001953125,
+    "loop_gap_max_mm": 0.7595287170261145
+  },
+  "per_joint": {
+    "lf0_Joint": {
+      "max_abs_fd_minus_physx_rad_s": 0.19147419929504395,
+      "rms_fd_minus_physx_rad_s": 0.12655901145811327,
+      "fraction_abs_difference_gt_5": 0.0
+    },
+    "l20_Joint": {
+      "max_abs_fd_minus_physx_rad_s": 15.251249313354492,
+      "rms_fd_minus_physx_rad_s": 14.83939434496816,
+      "fraction_abs_difference_gt_5": 0.9985007496251874
+    },
+    "l_wheel_Joint": {
+      "max_abs_fd_minus_physx_rad_s": 0.6965171694755554,
+      "rms_fd_minus_physx_rad_s": 0.6477609317297848,
+      "fraction_abs_difference_gt_5": 0.0
+    },
+    "rf0_Joint": {
+      "max_abs_fd_minus_physx_rad_s": 0.19235455989837646,
+      "rms_fd_minus_physx_rad_s": 0.1345547085218796,
+      "fraction_abs_difference_gt_5": 0.0
+    },
+    "r20_Joint": {
+      "max_abs_fd_minus_physx_rad_s": 15.249462127685547,
+      "rms_fd_minus_physx_rad_s": 14.867964802409567,
+      "fraction_abs_difference_gt_5": 0.9985007496251874
+    },
+    "r_wheel_Joint": {
+      "max_abs_fd_minus_physx_rad_s": 0.6959958076477051,
+      "rms_fd_minus_physx_rad_s": 0.6517027791215182,
+      "fraction_abs_difference_gt_5": 0.0
+    }
+  }
+}

@@ -69,18 +69,27 @@ def test_wyw_default_height_command_matches_documented_value():
     assert default_height == 0.22
 
 
-def test_wheel_asset_keeps_p13_71_conservative_velocity_limit():
+def test_fdu_asset_uses_500hz_wrapped_difference_for_all_actuators():
     asset_path = ROOT / "source/agent_world/agent_world/assets/wheelbipe_fdu.py"
     tree = ast.parse(asset_path.read_text(encoding="utf-8"))
-    wheel_actuator = next(
+    actuators = [
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
-        and _call_name(node) == "IdealPDActuatorCfg"
-        and any(
+        and _call_name(node) == "DiffVelPDActuatorCfg"
+    ]
+    assert len(actuators) == 3
+    for actuator in actuators:
+        values = {keyword.arg: ast.literal_eval(keyword.value) for keyword in actuator.keywords}
+        assert values["diff_dt"] == 0.002
+        assert values["wrap_to_pi"] is True
+
+    wheel_actuator = next(
+        actuator for actuator in actuators
+        if any(
             keyword.arg == "joint_names_expr"
             and ast.literal_eval(keyword.value) == [".*_wheel_Joint"]
-            for keyword in node.keywords
+            for keyword in actuator.keywords
         )
     )
     values = {keyword.arg: ast.literal_eval(keyword.value) for keyword in wheel_actuator.keywords}
@@ -88,6 +97,37 @@ def test_wheel_asset_keeps_p13_71_conservative_velocity_limit():
     assert values["effort_limit"] == 5.0
     assert values["velocity_limit"] == 60.0
     assert values["velocity_limit_sim"] == 60.0
+
+
+def test_wyw_velocity_contract_reaches_observation_reward_and_critic():
+    env_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env.py"
+    source = env_path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    env_class = next(
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "WheelbipeWywEnv"
+    )
+    methods = {
+        node.name: ast.unparse(node)
+        for node in env_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "policy_vel = self._wyw_joint_velocity" in methods["_build_wyw_policy_obs"]
+    assert "joint_acc = self._wyw_policy_joint_acceleration" in methods["_build_wyw_critic_obs"]
+    reward_source = methods["_compute_fdu_reward_terms"]
+    assert "qdot = self._update_wyw_joint_velocity(final_sample_id)" in reward_source
+    assert "qddot = self._update_wyw_policy_joint_acceleration(final_sample_id)" in reward_source
+    assert "self.robot.data.joint_vel[:, self._actuate_idx]" not in reward_source
+    assert "self.robot.data.joint_acc[:, self._actuate_idx]" not in reward_source
+    acceleration_source = methods["_update_wyw_policy_joint_acceleration"]
+    assert "self._wyw_last_policy_joint_velocity - velocity" in acceleration_source
+
+    cfg_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env_cfg.py"
+    assert _class_assignment(
+        cfg_path, "WheelbipeWywFlatEnvCfg", "wyw_joint_velocity_source"
+    ) == "wrapped_position_difference"
+    assert _class_assignment(
+        cfg_path, "WheelbipeWywFlatEnvCfg", "wyw_joint_velocity_diff_dt"
+    ) == 0.002
 
 
 def test_rough_boundary_is_immediate_termination_not_timeout():

@@ -49,7 +49,11 @@ runner 侧 Flat/Rough 将策略动作裁剪到 `[-1,1]`；Jump 为兼容既有 F
 | 轮（Flat/Rough）         |  0 |  0.2 |        5 N m |       60 rad/s |
 | 轮（Jump）               |  0 |  0.2 |       50 N m |       60 rad/s |
 
-轮速度目标缩放为 `10`，运行时 clamp 和 PhysX `velocity_limit_sim` 都是 `60 rad/s`。
+三组执行器的 D 项都使用 500 Hz、跨 `±π` 包裹的关节位置差分速度，不读取 PhysX 在闭链
+约束下报告的广义速度。reset 时按环境清空差分历史，第一次控制的估计速度为零。Kp/Kd、
+effort limit 和 armature 均未随此次语义修复改变。
+
+轮速度目标缩放为 `60`，运行时 clamp 和 PhysX `velocity_limit_sim` 都是 `60 rad/s`。
 这是当前速度目标 adapter 的安全边界；Fudan 原始控制器本身采用轮 torque 控制，不应把
 `60 rad/s` 描述成原始 Fudan URDF 的速度限位。四个驱动杆的 40 N m 是当前硬上限，域随机化
 只会按比例降低输出（Flat/Rough `[0.95,1.0]`，Jump `[0.9,1.0]`）。
@@ -104,6 +108,11 @@ acceleration `0.0025`、critic torque `0.05`、height scan `5`。action 段不�
 训练 actor 噪声为：角速度 `±0.2`、投影重力 `±0.05`、关节位置 `±0.02`、腿/轮速度
 `±1.5`；critic 的 policy 段使用 clean 副本。obs delay 和 action delay 均关闭；Play 噪声关闭。
 
+`dof_vel` 的六维输入与执行器相同，来自每个 2 ms 物理子步的编码器位置差分；history 最新帧
+包含 decimation 的第 5 个子步。critic 的 `dof_acc` 保持 Fudan 符号，按 100 Hz 策略步计算
+`(dof_vel[t-1] - dof_vel[t]) / 0.01`。当前语义版本为
+`fdu_flat_p0_direct_bars_fd_vel_v2`，旧 `v1` checkpoint 不兼容，不能续训或用于本版本验证。
+
 ## 奖励
 
 Flat/Rough 的权重（raw term 乘 weight 乘 `step_dt=0.01` 后，再按单项裁剪）如下：
@@ -120,7 +129,7 @@ Flat/Rough 的权重（raw term 乘 weight 乘 `step_dt=0.01` 后，再按单项
 | `lin_vel_z`                 |      -1 | 惩罚基座竖直速度 |
 | `ang_vel_xy`                |   -0.05 | 惩罚基座 roll/pitch 角速度 |
 | `orientation`               |     -15 | 惩罚投影重力的 x/y 分量，即机身倾斜 |
-| `dof_vel`                   |   -5e-5 | 惩罚四个腿部驱动杆的关节速度平方和 |
+| `dof_vel`                   |   -5e-5 | 惩罚四个腿驱动关节的 500 Hz 编码器位置差分速度平方和 |
 | `dof_acc`                   |   -3e-7 | 惩罚六个受控关节的加速度平方和 |
 | `torques`                   |   -1e-3 | 惩罚六个受控关节的施加力矩平方和 |
 | `action_rate`               |    -0.3 | 惩罚六维动作的一阶差分 `a[t]-a[t-1]` |

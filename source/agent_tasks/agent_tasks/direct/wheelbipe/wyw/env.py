@@ -41,6 +41,7 @@ from isaaclab.utils.math import (
 )
 
 from agent_tasks.direct.wheelbipe.wheelbipe25_v3.env import Wheelbipe25V3Env
+from agent_world.actuators.finite_difference_velocity import FiniteDifferenceJointVelocity
 
 from . import wyw_constants as C
 from .fdu_mapping import (
@@ -90,6 +91,22 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self._wheel_action_dim = len(self._wheel_idx)
         self._actuated_joint_count = len(self._actuate_idx)
         self.max_wheel_vel = float(self.cfg.max_wheel_vel)
+        velocity_dt = float(self.cfg.wyw_joint_velocity_diff_dt)
+        if abs(velocity_dt - float(self.physics_dt)) > 1.0e-12:
+            raise RuntimeError(
+                "WYW finite-difference velocity must run at the physics rate: "
+                f"configured={velocity_dt}, physics_dt={self.physics_dt}"
+            )
+        self._wyw_joint_velocity_estimator = FiniteDifferenceJointVelocity(
+            velocity_dt,
+            wrap_to_pi=bool(self.cfg.wyw_joint_velocity_wrap_to_pi),
+        )
+        current_policy_pos = self.robot.data.joint_pos[:, self._wyw_policy_joint_idx]
+        self._wyw_joint_velocity_estimator.reset(slice(None), current_policy_pos)
+        self._wyw_joint_velocity = torch.zeros_like(current_policy_pos)
+        self._wyw_last_policy_joint_velocity = torch.zeros_like(current_policy_pos)
+        self._wyw_policy_joint_acceleration = torch.zeros_like(current_policy_pos)
+        self._wyw_joint_acceleration_sample_id: int | None = None
 
         self._left_wheel_link_idx, _ = self.robot.find_bodies("l_wheel_Link")
         self._right_wheel_link_idx, _ = self.robot.find_bodies("r_wheel_Link")
@@ -257,6 +274,9 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self.wheel_actions = self.wheel_action_scale * self._actions[:, C.WYW_WHEEL_ACTION_IDS]
 
     def _apply_action(self) -> None:
+        # At this point the counter identifies the substep about to run, while
+        # articulation buffers still contain the result of the preceding one.
+        self._update_wyw_joint_velocity(int(self._sim_step_counter) - 1)
         wheel_targets = torch.clamp(self.wheel_actions, -self.max_wheel_vel, self.max_wheel_vel)
         # Match Fudan's direct joint-target semantics; L0/theta0 remain diagnostics only.
         self.robot.set_joint_position_target(self.leg_actions, joint_ids=self._wyw_leg_joint_idx)
@@ -268,6 +288,25 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         substep_index = int(getattr(self, "_sim_step_counter", 0)) % int(self.cfg.decimation)
         if getattr(self, "_wyw_buffers_ready", False) and substep_index != 1:
             self._update_wyw_l0_stability_monitor(self._get_wyw_measured_leg_lengths())
+
+    def _update_wyw_joint_velocity(self, sample_id: int) -> torch.Tensor:
+        """Sample one fresh 500 Hz policy-joint position state at most once."""
+        position = self.robot.data.joint_pos[:, self._wyw_policy_joint_idx]
+        self._wyw_joint_velocity = self._wyw_joint_velocity_estimator.update(
+            position, sample_id=sample_id
+        )
+        return self._wyw_joint_velocity
+
+    def _update_wyw_policy_joint_acceleration(self, sample_id: int) -> torch.Tensor:
+        """Update Fudan's signed policy-rate finite difference once per policy step."""
+        velocity = self._update_wyw_joint_velocity(sample_id)
+        if sample_id != self._wyw_joint_acceleration_sample_id:
+            self._wyw_policy_joint_acceleration.copy_(
+                (self._wyw_last_policy_joint_velocity - velocity) / self.step_dt
+            )
+            self._wyw_last_policy_joint_velocity.copy_(velocity)
+            self._wyw_joint_acceleration_sample_id = sample_id
+        return self._wyw_policy_joint_acceleration
 
     # ------------------------------------------------------------------ #
     # 缓冲初始化 / 复位
@@ -343,6 +382,12 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self._update_fdu_rough_curriculum(reset_env_ids)
         super()._reset_idx(env_ids)
         self._ensure_wyw_buffers()
+        if hasattr(self, "_wyw_joint_velocity_estimator") and reset_env_ids.numel() > 0:
+            current_policy_pos = self.robot.data.joint_pos[:, self._wyw_policy_joint_idx]
+            self._wyw_joint_velocity_estimator.reset(reset_env_ids, current_policy_pos)
+            self._wyw_joint_velocity[reset_env_ids] = 0.0
+            self._wyw_last_policy_joint_velocity[reset_env_ids] = 0.0
+            self._wyw_policy_joint_acceleration[reset_env_ids] = 0.0
         if done_reason_masks:
             log = self.extras.setdefault("log", {})
             reset_count = max(int(reset_env_ids.numel()), 1)
@@ -454,7 +499,7 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         """Build the 25-D Fudan proprioception, optionally adding actor-only noise."""
         cmd = self._get_wyw_command_block()
         policy_pos = self.obs_joint_pos[:, : C.WYW_ACTION_DIM]
-        policy_vel = self.obs_joint_vel[:, : C.WYW_ACTION_DIM]
+        policy_vel = self._wyw_joint_velocity
         ang_vel = self.obs_root_ang_vel_b
         gravity = self.obs_projected_gravity_b
         if noisy and self.use_self_obs_noise:
@@ -538,7 +583,7 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         + joint_acc(6) + heights(77) + torque(6) + DR 特权(12)。
         """
         base_lin_vel = self.robot.data.root_lin_vel_b * self.cfg.wyw_lin_vel_scale  # 3 (encoder 监督目标)
-        joint_acc = self.robot.data.joint_acc[:, self._actuate_idx]
+        joint_acc = self._wyw_policy_joint_acceleration
         torque = self.robot.data.applied_torque[:, self._actuate_idx]
         heights = self._get_fdu_height_scan_obs()
         previous_actions = self._previous_actions if previous_actions is None else previous_actions
@@ -585,6 +630,7 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         # 先跑基类：触发全部有状态副作用（obs 延迟副本、命令刷新、地面高度估计、历史 deque 等）
         observations = super()._get_observations()
         self._ensure_wyw_buffers()
+        self._update_wyw_joint_velocity(int(self._sim_step_counter))
 
         clean_policy = self._build_wyw_policy_obs(noisy=False)
         policy = self._build_wyw_policy_obs(noisy=True)
@@ -707,6 +753,9 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
     def _compute_fdu_reward_terms(self) -> dict[str, torch.Tensor]:
         """Compute the named Fudan reward terms without V3 shaping gates."""
         self._update_ground_height_estimate()
+        final_sample_id = int(self._sim_step_counter)
+        qdot = self._update_wyw_joint_velocity(final_sample_id)
+        qddot = self._update_wyw_policy_joint_acceleration(final_sample_id)
         wheel_pos_b, leg_lengths, leg_angles = self._get_wyw_virtual_leg_geometry()
         # Capture the fifth/final 500 Hz result, which becomes available only
         # after DirectRLEnv finishes the decimation loop.
@@ -717,8 +766,6 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         observed_height = self._get_fdu_base_height()
         height_cmd = self._get_observation_height_cmd()
 
-        qdot = self.robot.data.joint_vel[:, self._actuate_idx]
-        qddot = self.robot.data.joint_acc[:, self._actuate_idx]
         tau = self.robot.data.applied_torque[:, self._actuate_idx]
 
         hard_limits = self.robot.data.joint_pos_limits[:, self._wyw_leg_joint_idx]

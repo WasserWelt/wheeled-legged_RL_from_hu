@@ -24,7 +24,7 @@ from agent_world.assets.wheelbipe_fdu import Wheelbipe_FDU_CFG  # noqa: E402
 
 
 def main():
-    sim = SimulationContext(sim_utils.SimulationCfg(dt=1 / 120, device="cpu"))
+    sim = SimulationContext(sim_utils.SimulationCfg(dt=0.002, device="cpu"))
     cfg = Wheelbipe_FDU_CFG.replace(prim_path="/World/Robot")
     robot = Articulation(cfg)
     sim.reset()
@@ -53,6 +53,8 @@ def main():
     assert wheel_actuator.cfg.velocity_limit == 60.0
     assert wheel_actuator.cfg.velocity_limit_sim == 60.0
     assert wheel_actuator.cfg.effort_limit == 5.0
+    assert all(actuator.cfg.diff_dt == 0.002 for actuator in robot.actuators.values())
+    assert all(actuator.cfg.wrap_to_pi is True for actuator in robot.actuators.values())
     for joint_name in ("l_wheel_Joint", "r_wheel_Joint"):
         joint_index = robot.joint_names.index(joint_name)
         joint_velocity_limit = float(robot.data.joint_vel_limits[0, joint_index])
