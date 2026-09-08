@@ -82,7 +82,7 @@ def main():
         assert not hasattr(env.cfg, "wyw_safe_theta0_abs")
         assert env.cfg.termination_duration_enabled is True
         assert env.cfg.termination_duration_steps == 100
-        assert env.cfg.wyw_training_semantics_version == "fdu_flat_p0_direct_bars_fd_vel_v2"
+        assert env.cfg.wyw_training_semantics_version == "fdu_flat_p0_direct_bars_fd_vel_v3_material_split"
         assert env.cfg.wyw_joint_velocity_source == "wrapped_position_difference"
         assert env.cfg.wyw_joint_velocity_diff_dt == env.cfg.sim.dt == 0.002
         assert env.cfg.wyw_collision_contact_force == 0.1
@@ -377,7 +377,7 @@ def main():
             dump_yaml(str(env_yaml), env.cfg)
             dumped = env_yaml.read_text(encoding="utf-8")
             for required in (
-                "wyw_training_semantics_version: fdu_flat_p0_direct_bars_fd_vel_v2",
+                "wyw_training_semantics_version: fdu_flat_p0_direct_bars_fd_vel_v3_material_split",
                 "wyw_joint_velocity_source: wrapped_position_difference",
                 "wyw_joint_velocity_diff_dt: 0.002",
                 "wyw_failure_contact_force: 10.0",

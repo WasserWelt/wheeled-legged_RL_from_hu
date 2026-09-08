@@ -34,6 +34,27 @@ def _call_name(node: ast.Call) -> str | None:
     return None
 
 
+def _event_params(path: Path, class_name: str, event_name: str) -> dict[str, object]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    class_node = next(
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == class_name
+    )
+    assignment = next(
+        node
+        for node in class_node.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == event_name for target in node.targets)
+    )
+    assert isinstance(assignment.value, ast.Call)
+    params = next(keyword.value for keyword in assignment.value.keywords if keyword.arg == "params")
+    assert isinstance(params, ast.Dict)
+    return {
+        ast.literal_eval(key): ast.literal_eval(value)
+        for key, value in zip(params.keys, params.values)
+        if isinstance(key, ast.Constant) and key.value != "asset_cfg"
+    }
+
+
 def test_wyw_wheel_target_uses_full_normalized_range_and_p13_71_speed_cap():
     env_cfg_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env_cfg.py"
     target_limit = _class_assignment(env_cfg_path, "WheelbipeWywFlatEnvCfg", "max_wheel_vel")
@@ -67,6 +88,34 @@ def test_wyw_default_height_command_matches_documented_value():
         env_cfg_path, "WheelbipeWywFlatEnvCfg", "default_height_cmd"
     )
     assert default_height == 0.22
+
+
+def test_wyw_flat_material_contract_separates_wheels_links_and_ground():
+    env_cfg_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env_cfg.py"
+    params = _event_params(env_cfg_path, "FduEventCfg", "physics_material")
+    assert params == {
+        "friction_range": (0.8, 1.2),
+        "dynamic_friction_range": (0.6, 0.9),
+        "restitution_range": (0.10, 0.45),
+        "link_static_friction_range": (0.6, 1.4),
+        "link_restitution_range": (0.05, 0.20),
+    }
+
+    source = env_cfg_path.read_text(encoding="utf-8")
+    assert "cfg.terrain.physics_material.static_friction = 0.65" in source
+    assert "cfg.terrain.physics_material.dynamic_friction = 0.55" in source
+    assert "cfg.terrain.physics_material.restitution = 0.175" in source
+
+    tree = ast.parse(source)
+    randomizer = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "randomize_fdu_material"
+    )
+    randomizer_source = ast.unparse(randomizer)
+    assert "wheel_shape_indices" in randomizer_source
+    assert "link_shape_indices" in randomizer_source
+    assert "wheel_dynamic = torch.minimum(wheel_dynamic, wheel_static)" in randomizer_source
 
 
 def test_fdu_asset_uses_500hz_wrapped_difference_for_all_actuators():

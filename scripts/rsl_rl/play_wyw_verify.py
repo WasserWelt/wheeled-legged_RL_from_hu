@@ -614,7 +614,7 @@ def _validate_checkpoint_metadata(checkpoint: Path, variant: str) -> dict[str, A
         "state_space": env_meta.get("state_space") == "141",
         "history_frames": env_meta.get("num_obs_hist") == "5",
         "semantics_version": env_meta.get("wyw_training_semantics_version")
-        == "fdu_flat_p0_direct_bars_fd_vel_v2",
+        == "fdu_flat_p0_direct_bars_fd_vel_v3_material_split",
         "joint_velocity_source": env_meta.get("wyw_joint_velocity_source")
         == "wrapped_position_difference",
         "joint_velocity_diff_dt": math.isclose(

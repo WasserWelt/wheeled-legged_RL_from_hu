@@ -111,7 +111,7 @@ acceleration `0.0025`、critic torque `0.05`、height scan `5`。action 段不�
 `dof_vel` 的六维输入与执行器相同，来自每个 2 ms 物理子步的编码器位置差分；history 最新帧
 包含 decimation 的第 5 个子步。critic 的 `dof_acc` 保持 Fudan 符号，按 100 Hz 策略步计算
 `(dof_vel[t-1] - dof_vel[t]) / 0.01`。当前语义版本为
-`fdu_flat_p0_direct_bars_fd_vel_v2`，旧 `v1` checkpoint 不兼容，不能续训或用于本版本验证。
+`fdu_flat_p0_direct_bars_fd_vel_v3_material_split`，旧 `v1/v2` checkpoint 不兼容，不能续训或用于本版本验证。
 
 ## 奖励
 
@@ -196,15 +196,20 @@ link 是否存在大于 `0.1 N` 的接触。当前代码有意保留 Fudan 的 `
 | base mass addition          | `[-1,2] kg`   | `[-2,3] kg`  |
 | 每刚体 mass/inertia scale   | `[0.9,1.1]`   | `[0.8,1.2]`  |
 | base COM xyz                | `±0.02 m`    | `±0.05 m`   |
-| robot friction              | `[0.6,1.4]`   | `[0.1,2.0]`  |
-| robot restitution           | `[0.6,1.0]`   | `[0.5,1.0]`  |
+| wheel static friction       | `[0.8,1.2]`   | `[0.1,2.0]`  |
+| wheel dynamic friction      | `[0.6,0.9]`   | 与 static 相同 |
+| wheel restitution           | `[0.10,0.45]` | `[0.5,1.0]`  |
+| non-wheel link friction     | `[0.6,1.4]`   | `[0.1,2.0]`  |
+| non-wheel link restitution  | `[0.05,0.20]` | `[0.5,1.0]`  |
 | default policy-joint offset | `±0.03 rad`  | `±0.05 rad` |
 | Kp/Kd scale                 | `[0.95,1.05]` | `[0.9,1.1]`  |
 | effort output scale         | `[0.95,1.0]`  | `[0.9,1.0]`  |
 
-每个环境独立采样并把 base mass deviation、COM、default joint delta、friction、restitution
-写入 critic 的 12 维 privilege。仿真/地面材质 friction/restitution 默认均为 `0.5/0.5`，
-combine mode 为 `average`。
+每个环境独立采样 wheel/link 材质；critic 的 12 维 privilege 记录 wheel static friction 和
+wheel restitution。Flat 的 plane 是所有环境共享的全局地面，不能按环境独立随机，因此使用目标
+范围中点：地面 static/dynamic friction=`0.65/0.55`、restitution=`0.175`。combine mode 为
+`average`，对应轮地有效范围约 static friction `[0.725,0.925]`、dynamic friction
+`[0.575,0.725]`、restitution `[0.1375,0.3125]`。
 
 ## Rough 地形与课程
 

@@ -22,7 +22,7 @@ parser.add_argument(
     nargs=2,
     metavar=("MIN", "MAX"),
     default=None,
-    help="Override the robot restitution randomization range.",
+    help="Override the wheel restitution randomization range.",
 )
 parser.add_argument(
     "--ground-restitution",
@@ -112,7 +112,18 @@ def main() -> None:
         "env_spacing": args_cli.env_spacing,
         "policy_steps": args_cli.policy_steps,
         "step_dt": env.step_dt,
-        "robot_restitution_range_config": list(cfg.events.physics_material.params["restitution_range"]),
+        "wheel_restitution_range_config": list(cfg.events.physics_material.params["restitution_range"]),
+        "link_restitution_range_config": list(
+            cfg.events.physics_material.params["link_restitution_range"]
+        ),
+        "wheel_static_friction_range_config": list(
+            cfg.events.physics_material.params["friction_range"]
+        ),
+        "wheel_dynamic_friction_range_config": list(
+            cfg.events.physics_material.params["dynamic_friction_range"]
+        ),
+        "ground_static_friction_config": float(cfg.terrain.physics_material.static_friction),
+        "ground_dynamic_friction_config": float(cfg.terrain.physics_material.dynamic_friction),
         "ground_restitution_config": float(cfg.terrain.physics_material.restitution),
         "restitution_combine_mode": str(cfg.terrain.physics_material.restitution_combine_mode),
         "terrain_type": str(cfg.terrain.terrain_type),
@@ -141,10 +152,47 @@ def main() -> None:
             origin_report["ground_coverage"] = "unbounded_plane"
         report["environment_origins"] = origin_report
         if hasattr(env, "_wyw_restitution_sample"):
-            sampled = env._wyw_restitution_sample
-            report["sampled_robot_restitution"] = _quantiles(sampled)
-            effective = 0.5 * (sampled + float(cfg.terrain.physics_material.restitution))
-            report["effective_restitution_average"] = _quantiles(effective)
+            ground_static = float(cfg.terrain.physics_material.static_friction)
+            ground_dynamic = float(cfg.terrain.physics_material.dynamic_friction)
+            ground_restitution = float(cfg.terrain.physics_material.restitution)
+            wheel_static = env._wyw_friction_sample
+            wheel_dynamic = env._wyw_dynamic_friction_sample
+            wheel_restitution = env._wyw_restitution_sample
+            report["sampled_wheel_static_friction"] = _quantiles(wheel_static)
+            report["sampled_wheel_dynamic_friction"] = _quantiles(wheel_dynamic)
+            report["sampled_wheel_restitution"] = _quantiles(wheel_restitution)
+            report["sampled_link_restitution"] = _quantiles(
+                env._wyw_link_restitution_sample
+            )
+            report["effective_wheel_ground_static_friction_average"] = _quantiles(
+                0.5 * (wheel_static + ground_static)
+            )
+            report["effective_wheel_ground_dynamic_friction_average"] = _quantiles(
+                0.5 * (wheel_dynamic + ground_dynamic)
+            )
+            report["effective_wheel_ground_restitution_average"] = _quantiles(
+                0.5 * (wheel_restitution + ground_restitution)
+            )
+            properties = env.robot.root_physx_view.get_material_properties()
+            wheel_indices = env._get_material_indices(["[lr]_wheel_Link"])
+            link_indices = [
+                index for index in range(properties.shape[1]) if index not in wheel_indices
+            ]
+            if not wheel_indices or not link_indices:
+                raise RuntimeError(
+                    f"invalid wheel/link material partition: wheels={wheel_indices}, links={link_indices}"
+                )
+            report["physx_material_shape_partition"] = {
+                "wheel_shape_indices": wheel_indices,
+                "link_shape_count": len(link_indices),
+                "wheel_static_friction": _quantiles(properties[:, wheel_indices, 0]),
+                "wheel_dynamic_friction": _quantiles(properties[:, wheel_indices, 1]),
+                "wheel_restitution": _quantiles(properties[:, wheel_indices, 2]),
+                "link_restitution": _quantiles(properties[:, link_indices, 2]),
+                "dynamic_not_above_static": bool(
+                    torch.all(properties[:, :, 1] <= properties[:, :, 0]).item()
+                ),
+            }
 
         reset_stats = {
             "reset_envs": 0,

@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from collections import OrderedDict
 
 import torch
@@ -47,7 +48,7 @@ FDU_PLANE_REWARDS = OrderedDict(
     tracking_lin_vel_enhance=1.0,
     tracking_ang_vel=1.0,
     base_height=1.0,
-    upright_orientation=1.0,
+    upright_orientation=0.0,#1.0,
     nominal_state=-1.0,
     lin_vel_z=-1.0,
     ang_vel_xy=-0.05,
@@ -113,21 +114,80 @@ def randomize_fdu_material(
     friction_range: tuple[float, float],
     restitution_range: tuple[float, float],
     asset_cfg: SceneEntityCfg,
+    dynamic_friction_range: tuple[float, float] | None = None,
+    link_static_friction_range: tuple[float, float] | None = None,
+    link_dynamic_friction_range: tuple[float, float] | None = None,
+    link_restitution_range: tuple[float, float] | None = None,
 ) -> None:
-    """Assign one friction and restitution sample to every robot shape per env."""
+    """Assign wheel/link material samples to the robot shapes per environment.
+
+    The wheel and aluminium-link contact pairs have different physical
+    meanings, so they must not share one material sample.  ``friction_range``
+    and ``restitution_range`` remain the wheel aliases used by older configs.
+    Dynamic friction is sampled independently and clamped below static friction
+    to keep every realization physically consistent.
+    """
     asset = env.scene[asset_cfg.name]
     ids = torch.arange(env.scene.num_envs, device="cpu") if env_ids is None else env_ids.cpu()
     props = asset.root_physx_view.get_material_properties()
-    friction = torch.empty(len(ids), device="cpu").uniform_(*friction_range)
-    restitution = torch.empty(len(ids), device="cpu").uniform_(*restitution_range)
-    props[ids, :, 0] = friction[:, None]
-    props[ids, :, 1] = friction[:, None]
-    props[ids, :, 2] = restitution[:, None]
+    wheel_static = torch.empty(len(ids), device="cpu").uniform_(*friction_range)
+    if dynamic_friction_range is None:
+        wheel_dynamic = wheel_static.clone()
+    else:
+        wheel_dynamic = torch.empty(len(ids), device="cpu").uniform_(*dynamic_friction_range)
+        wheel_dynamic = torch.minimum(wheel_dynamic, wheel_static)
+    wheel_restitution = torch.empty(len(ids), device="cpu").uniform_(*restitution_range)
+    link_static = torch.empty(len(ids), device="cpu").uniform_(
+        *(link_static_friction_range or friction_range)
+    )
+    if link_dynamic_friction_range is None:
+        link_dynamic = link_static.clone()
+    else:
+        link_dynamic = torch.empty(len(ids), device="cpu").uniform_(*link_dynamic_friction_range)
+        link_dynamic = torch.minimum(link_dynamic, link_static)
+    link_restitution = torch.empty(len(ids), device="cpu").uniform_(
+        *(link_restitution_range or restitution_range)
+    )
+
+    # root_physx_view exposes a flattened shape dimension.  Build the same
+    # deterministic body->shape mapping used by the runtime material debug
+    # helpers, then assign wheel and non-wheel shapes independently.
+    wheel_shape_indices: list[int] = []
+    link_shape_indices: list[int] = []
+    shape_idx = 0
+    for body_id, link_path in enumerate(asset.root_physx_view.link_paths[0]):
+        link_view = asset._physics_sim_view.create_rigid_body_view(link_path)
+        count = int(link_view.max_shapes)
+        body_name = asset.body_names[body_id]
+        target = wheel_shape_indices if re.search(r"[lr]_wheel_Link", body_name) else link_shape_indices
+        target.extend(range(shape_idx, shape_idx + count))
+        shape_idx += count
+    if shape_idx != props.shape[1]:
+        raise RuntimeError(
+            f"FDU material shape mapping mismatch: mapped {shape_idx}, properties have {props.shape[1]}"
+        )
+    if not wheel_shape_indices or not link_shape_indices:
+        raise RuntimeError(
+            "FDU material split requires both wheel and non-wheel collision shapes: "
+            f"wheels={wheel_shape_indices}, links={link_shape_indices}"
+        )
+    wheel_idx = torch.tensor(wheel_shape_indices, dtype=torch.long)
+    props[ids[:, None], wheel_idx, 0] = wheel_static[:, None]
+    props[ids[:, None], wheel_idx, 1] = wheel_dynamic[:, None]
+    props[ids[:, None], wheel_idx, 2] = wheel_restitution[:, None]
+    link_idx = torch.tensor(link_shape_indices, dtype=torch.long)
+    props[ids[:, None], link_idx, 0] = link_static[:, None]
+    props[ids[:, None], link_idx, 1] = link_dynamic[:, None]
+    props[ids[:, None], link_idx, 2] = link_restitution[:, None]
     asset.root_physx_view.set_material_properties(props, ids)
     env._wyw_friction_sample = torch.zeros(env.scene.num_envs, device=asset.device)
     env._wyw_restitution_sample = torch.zeros(env.scene.num_envs, device=asset.device)
-    env._wyw_friction_sample[ids.to(asset.device)] = friction.to(asset.device)
-    env._wyw_restitution_sample[ids.to(asset.device)] = restitution.to(asset.device)
+    env._wyw_dynamic_friction_sample = torch.zeros(env.scene.num_envs, device=asset.device)
+    env._wyw_link_restitution_sample = torch.zeros(env.scene.num_envs, device=asset.device)
+    env._wyw_friction_sample[ids.to(asset.device)] = wheel_static.to(asset.device)
+    env._wyw_dynamic_friction_sample[ids.to(asset.device)] = wheel_dynamic.to(asset.device)
+    env._wyw_restitution_sample[ids.to(asset.device)] = wheel_restitution.to(asset.device)
+    env._wyw_link_restitution_sample[ids.to(asset.device)] = link_restitution.to(asset.device)
 
 
 def randomize_fdu_base_com(
@@ -192,15 +252,17 @@ def _apply_wyw_common(cfg) -> None:
     cfg.sim.physics_material = copy.deepcopy(cfg.sim.physics_material)
     cfg.sim.physics_material.friction_combine_mode = "average"
     cfg.sim.physics_material.restitution_combine_mode = "average"
-    cfg.sim.physics_material.static_friction = 0.5
-    cfg.sim.physics_material.dynamic_friction = 0.5
-    cfg.sim.physics_material.restitution = 0.5
+    # Flat uses one global plane, so use the midpoint of the requested ground
+    # range here; robot materials are randomized independently per environment.
+    cfg.sim.physics_material.static_friction = 0.65
+    cfg.sim.physics_material.dynamic_friction = 0.55
+    cfg.sim.physics_material.restitution = 0.175
     cfg.terrain.physics_material = copy.deepcopy(cfg.terrain.physics_material)
     cfg.terrain.physics_material.friction_combine_mode = "average"
     cfg.terrain.physics_material.restitution_combine_mode = "average"
-    cfg.terrain.physics_material.static_friction = 0.5
-    cfg.terrain.physics_material.dynamic_friction = 0.5
-    cfg.terrain.physics_material.restitution = 0.5
+    cfg.terrain.physics_material.static_friction = 0.65
+    cfg.terrain.physics_material.dynamic_friction = 0.55
+    cfg.terrain.physics_material.restitution = 0.175
 
     # fudan 观测形状。stock DirectRLEnv._configure_gym_env_spaces 会把
     # observation_space 原样交给 spec_to_gym_space —— 传 dict 会被整体嵌套进
@@ -300,8 +362,13 @@ class FduEventCfg(EventCfg):
         mode="startup",
         params={
             "asset_cfg": SceneEntityCfg("robot"),
-            "friction_range": (0.6, 1.4),
-            "restitution_range": (0.6, 1.0),
+            # Legacy aliases refer to the wheel material.
+            "friction_range": (0.8, 1.2),
+            "dynamic_friction_range": (0.6, 0.9),
+            "restitution_range": (0.10, 0.45),
+            # Keep legacy link friction unchanged for this isolated material study.
+            "link_static_friction_range": (0.6, 1.4),
+            "link_restitution_range": (0.05, 0.20),
         },
     )
     default_joint_pos = EventTerm(
@@ -465,7 +532,7 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     max_wheel_vel = 60.0
     # Persist the active action/reward/termination contract in params/env.yaml
     # for run auditing. Checkpoint compatibility remains an operator decision.
-    wyw_training_semantics_version = "fdu_flat_p0_direct_bars_fd_vel_v2"
+    wyw_training_semantics_version = "fdu_flat_p0_direct_bars_fd_vel_v3_material_split"
     # Fudan derives all six policy-joint velocities from wrapped encoder
     # position differences at every 500 Hz physics step. This changes the
     # checkpoint observation/control contract and must not resume v1 runs.
@@ -492,7 +559,7 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     wyw_command_curriculum_yaw_threshold = 0.56
     wyw_command_curriculum_step = 0.1
     wyw_command_curriculum_max_abs = 2.5
-    clip_single_reward = 1.0
+    clip_single_reward = 2.5
     only_positive_rewards = False
     rewards = copy.deepcopy(FDU_PLANE_REWARDS)
 
