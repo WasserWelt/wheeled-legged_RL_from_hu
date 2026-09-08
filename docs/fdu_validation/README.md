@@ -54,7 +54,8 @@ CPU physics through a natural 20 s timeout under the current 16/6 solver and
 500. Jump's 20 s period coincides with the episode boundary, so timeout/reset
 at step 1999 resamples it before a standalone step-2000 resample. All three
 reports verify reset history/action clearing and episode-level L0 log keys;
-the Rough report additionally records a terrain level change across reset.
+the Rough report additionally verifies that its curriculum ran and records
+whether that episode happened to change a terrain level or command range.
 These runs deliberately raise the tilt-persistence window from the production
 100 steps to 100000 steps so random zero-action tilt cannot pre-empt the natural
 timeout; the production 100-step behavior is covered separately by golden and

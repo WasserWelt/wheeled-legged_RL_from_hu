@@ -36,8 +36,8 @@ Fudan reward 和接触/腾空计算产生。
 四个腿动作直接按 `q_target = q_default + 0.5 * action` 发送给实体驱动杆，不再计算
 `(L0, theta0)` 后投影或逆解。`L0/theta0` 只用于 reward、几何诊断和稳定边界日志。轮动作是
 速度目标 `60 * action` 并限幅到 `±60 rad/s`。策略输出仍为 6 维：四个实体驱动杆位置目标和两个轮速度目标。
-runner 侧 Flat/Rough 将策略动作裁剪到 `[-1,1]`；Jump 为兼容既有 Fudan checkpoint，仍使用
-`[-100,100]` 的宽裁剪范围。环境侧随后再对轮速度目标裁剪到 `±60 rad/s`。
+runner 侧 Flat/Rough/Jump 均使用 `[-100,100]` 的宽策略动作裁剪范围。环境侧随后再对轮速度
+目标裁剪到 `±60 rad/s`。
 
 ## 执行器与限制
 
@@ -222,7 +222,7 @@ reset 时若距 terrain origin 超过 terrain length 的四分之一（`2 m`）�
 ## PPO
 
 Flat/Rough/Jump 共享 `WheelbipeWywPPORunnerCfg` 的网络和 PPO 超参；experiment name 分开，
-Jump 另行放宽 runner 动作裁剪范围：
+Sequence PPO 配置：
 
 | 项                                      | 值                                                                     |
 | --------------------------------------- | ---------------------------------------------------------------------- |
@@ -237,7 +237,7 @@ Jump 另行放宽 runner 动作裁剪范围：
 | entropy / epochs / minibatches          | `.01` / `5` / `4`                                                |
 | policy LR / encoder LR                  | `1e-3` / `1e-3`                                                    |
 | encoder loss                            | MSE，全部 transition 参与监督（包括 terminal transition）             |
-| runner action clip                      | Flat/Rough `±1`；Jump `±100`                                        |
+| runner action clip                      | Flat/Rough/Jump 均为 `±100`                                          |
 | schedule / gamma / lambda               | adaptive /`.99` / `.95`                                            |
 | desired KL / max grad norm              | `.005` / `1`                                                       |
 

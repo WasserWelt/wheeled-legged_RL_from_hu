@@ -549,6 +549,9 @@ class WheelbipeWywRoughEnvCfg(WheelbipeWywFlatEnvCfg):
     events = FduRoughEventCfg()
     wyw_flat_command_curriculum_enabled = False
     wyw_rough_curriculum_enabled = True
+    # A level-0 failure may narrow a wider band, but must not make the initial
+    # +/-0.5 m/s command range harder.
+    wyw_rough_command_min_abs = 0.5
     rough_terrain_generator_cfg = copy.deepcopy(FDU_ROUGH_TERRAIN_CFG)
     rough_terrain_boundary_reset_cfg = {
         "enabled": True,

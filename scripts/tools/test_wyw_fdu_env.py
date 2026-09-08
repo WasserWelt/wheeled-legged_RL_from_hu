@@ -438,6 +438,25 @@ def main():
             env._wyw_flat_curriculum_last_step = saved_curriculum_last_step
             env._wyw_flat_curriculum_pending_log = None
 
+        if args_cli.variant == "rough" and not args_cli.play:
+            all_ids = torch.arange(n, device=env.device)
+            env.terrain.terrain_levels.zero_()
+            env.robot.data.root_pos_w[:, :2].copy_(env.terrain.env_origins[:, :2])
+            env._episode_sums["tracking_lin_vel"].zero_()
+            env._wyw_command_ranges_x[:, 0] = -0.5
+            env._wyw_command_ranges_x[:, 1] = 0.5
+            env._reset_idx(all_ids)
+            assert torch.allclose(
+                env._wyw_command_ranges_x,
+                torch.tensor([-0.5, 0.5], device=env.device).expand(n, -1),
+            )
+            rough_log = env.extras["log"]
+            assert rough_log["Curriculum/FDURough/terrain_level_mean"] == 0.0
+            assert rough_log["Curriculum/FDURough/move_up_count"] == 0
+            assert rough_log["Curriculum/FDURough/move_down_count"] == n
+            assert rough_log["Curriculum/FDURough/success_count"] == 0
+            assert rough_log["Curriculum/FDURough/vx_abs_mean"] == 0.5
+
         # Test Fudan's exact shared 1 s failure counter on the selected device.
         # Switching from contact failure to tilt failure must not reset it.
         all_ids = torch.arange(n, device=env.device)

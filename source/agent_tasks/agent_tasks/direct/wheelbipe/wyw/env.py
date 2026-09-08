@@ -348,6 +348,7 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         )
         self._wyw_flat_curriculum_last_step = 0
         self._wyw_flat_curriculum_pending_log = None
+        self._wyw_rough_curriculum_pending_log = None
         self._wyw_buffers_ready = True
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
@@ -403,6 +404,9 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         if self._wyw_flat_curriculum_pending_log is not None:
             self.extras.setdefault("log", {}).update(self._wyw_flat_curriculum_pending_log)
             self._wyw_flat_curriculum_pending_log = None
+        if self._wyw_rough_curriculum_pending_log is not None:
+            self.extras.setdefault("log", {}).update(self._wyw_rough_curriculum_pending_log)
+            self._wyw_rough_curriculum_pending_log = None
         if monitor_ready and reset_env_ids.numel() > 0:
             log = self.extras.setdefault("log", {})
             log["Episode/FDU_L0Boundary/affected_env_fraction"] = float(
@@ -922,7 +926,7 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             return
         tracking_rate = tracking_sum[env_ids] / max(float(self.max_episode_length_s), 1.0e-6)
         old_levels = terrain.terrain_levels[env_ids].clone()
-        move_up, move_down, _success, updated_ranges = compute_fdu_rough_curriculum_transition(
+        move_up, move_down, success, updated_ranges = compute_fdu_rough_curriculum_transition(
             old_levels=old_levels,
             terrain_types=terrain.terrain_types[env_ids],
             distance=distance,
@@ -930,9 +934,17 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             command_ranges_x=self._wyw_command_ranges_x[env_ids],
             terrain_length=float(terrain.cfg.terrain_generator.size[0]),
             max_terrain_level=int(terrain.max_terrain_level),
+            failure_min_abs=float(self.cfg.wyw_rough_command_min_abs),
         )
         terrain.update_env_origins(env_ids, move_up, move_down)
         self._wyw_command_ranges_x[env_ids] = updated_ranges
+        self._wyw_rough_curriculum_pending_log = {
+            "Curriculum/FDURough/terrain_level_mean": float(old_levels.float().mean().item()),
+            "Curriculum/FDURough/move_up_count": int(move_up.count_nonzero().item()),
+            "Curriculum/FDURough/move_down_count": int(move_down.count_nonzero().item()),
+            "Curriculum/FDURough/success_count": int(success.count_nonzero().item()),
+            "Curriculum/FDURough/vx_abs_mean": float(updated_ranges.abs().mean().item()),
+        }
 
     def _update_fdu_flat_command_curriculum(self, env_ids: torch.Tensor) -> None:
         """Consume each reached Fudan Plane vx-curriculum cadence on the next reset."""

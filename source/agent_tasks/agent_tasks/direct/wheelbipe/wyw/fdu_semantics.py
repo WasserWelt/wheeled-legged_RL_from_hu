@@ -418,6 +418,7 @@ def compute_fdu_rough_curriculum_transition(
     command_ranges_x: torch.Tensor,
     terrain_length: float,
     max_terrain_level: int,
+    failure_min_abs: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute Fudan Rough move masks and command-range updates for one reset.
 
@@ -432,8 +433,9 @@ def compute_fdu_rough_curriculum_transition(
     updated = command_ranges_x.clone()
 
     if torch.any(failure):
-        updated[failure, 0] = torch.clamp(updated[failure, 0] + 0.25, min=-2.5, max=-1.0)
-        updated[failure, 1] = torch.clamp(updated[failure, 1] - 0.25, min=1.0, max=2.5)
+        min_abs = float(failure_min_abs)
+        updated[failure, 0] = torch.clamp(updated[failure, 0] + 0.25, min=-2.5, max=-min_abs)
+        updated[failure, 1] = torch.clamp(updated[failure, 1] - 0.25, min=min_abs, max=2.5)
 
     expand = success & (tracking_rate > 0.7)
     if torch.any(expand):

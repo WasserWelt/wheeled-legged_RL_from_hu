@@ -535,6 +535,7 @@ def test_rough_curriculum_failure_success_and_basic_advanced_ranges():
         command_ranges_x=ranges,
         terrain_length=8.0,
         max_terrain_level=10,
+        failure_min_abs=0.5,
     )
     assert move_down.tolist() == [True, False, False, False]
     assert move_up.tolist() == [False, True, True, False]
@@ -543,3 +544,18 @@ def test_rough_curriculum_failure_success_and_basic_advanced_ranges():
     assert torch.allclose(updated[1], torch.tensor([-2.5, 2.5]))  # basic: +0.50
     assert torch.allclose(updated[2], torch.tensor([-1.5, 1.5]))  # advanced cap
     assert torch.allclose(updated[3], ranges[3])
+
+
+def test_rough_curriculum_level_zero_failure_does_not_expand_initial_range():
+    _, move_down, _, updated = S.compute_fdu_rough_curriculum_transition(
+        old_levels=torch.tensor([0]),
+        terrain_types=torch.tensor([0]),
+        distance=torch.tensor([0.0]),
+        tracking_rate=torch.tensor([0.1]),
+        command_ranges_x=torch.tensor([[-0.5, 0.5]]),
+        terrain_length=8.0,
+        max_terrain_level=10,
+        failure_min_abs=0.5,
+    )
+    assert move_down.tolist() == [True]
+    assert torch.equal(updated, torch.tensor([[-0.5, 0.5]]))
