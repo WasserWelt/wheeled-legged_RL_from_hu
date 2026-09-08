@@ -16,6 +16,11 @@ parser.add_argument("--root-height", type=float, default=0.55)
 parser.add_argument("--l0", type=float, default=0.16)
 parser.add_argument("--position-iterations", type=int, default=16)
 parser.add_argument("--velocity-iterations", type=int, default=6)
+parser.add_argument(
+    "--external-forces-every-iteration",
+    action="store_true",
+    help="recompute external forces at every TGS position iteration",
+)
 parser.add_argument("--drive-stiffness", type=float, default=None, help="optional legs_act Kp override")
 parser.add_argument("--drive-damping", type=float, default=None, help="optional legs_act Kd override")
 parser.add_argument("--drive-effort-limit", type=float, default=None, help="optional legs_act effort override")
@@ -130,6 +135,9 @@ def main() -> None:
             render_interval=1,
             device=args_cli.device,
             gravity=(0.0, 0.0, 0.0),
+            physx=sim_utils.PhysxCfg(
+                enable_external_forces_every_iteration=args_cli.external_forces_every_iteration,
+            ),
         )
     )
     ground_cfg = sim_utils.GroundPlaneCfg(
@@ -321,6 +329,7 @@ def main() -> None:
             "target_l0_m": args_cli.l0,
             "position_iterations": args_cli.position_iterations,
             "velocity_iterations": args_cli.velocity_iterations,
+            "external_forces_every_iteration": args_cli.external_forces_every_iteration,
             "preshape_duration_s": preshape_steps * args_cli.dt,
             "self_collisions_enabled": False,
             "ground_friction": 0.8,

@@ -181,23 +181,36 @@ def main() -> None:
             sim.step(render=False)
             robot.update(sim_dt)
 
-        drive_pos, drive_vel, passive_pos, passive_vel, physical_l0, loop_gap = [], [], [], [], [], []
+        drive_pos, drive_vel, drive_fd_vel = [], [], []
+        passive_pos, passive_vel, passive_fd_vel = [], [], []
+        physical_l0, loop_gap = [], []
+        previous_joint_pos = robot.data.joint_pos[0].clone()
         for _ in range(args_cli.sample_steps):
             robot.write_data_to_sim()
             sim.step(render=False)
             robot.update(sim_dt)
-            drive_pos.append(robot.data.joint_pos[0, drive_ids].clone())
+            joint_pos = robot.data.joint_pos[0].clone()
+            joint_fd_vel = torch.atan2(
+                torch.sin(joint_pos - previous_joint_pos),
+                torch.cos(joint_pos - previous_joint_pos),
+            ) / sim_dt
+            previous_joint_pos = joint_pos
+            drive_pos.append(joint_pos[drive_ids])
             drive_vel.append(robot.data.joint_vel[0, drive_ids].clone())
-            passive_pos.append(robot.data.joint_pos[0, passive_ids].clone())
+            drive_fd_vel.append(joint_fd_vel[drive_ids])
+            passive_pos.append(joint_pos[passive_ids])
             passive_vel.append(robot.data.joint_vel[0, passive_ids].clone())
+            passive_fd_vel.append(joint_fd_vel[passive_ids])
             delta = robot.data.body_pos_w[0, wheel_ids] - robot.data.body_pos_w[0, hip_ids]
             physical_l0.append(torch.linalg.vector_norm(delta[:, (0, 2)], dim=-1))
             loop_gap.append(_loop_gaps(robot, anchors))
 
         drive_pos_t = torch.stack(drive_pos)
         drive_vel_t = torch.stack(drive_vel)
+        drive_fd_vel_t = torch.stack(drive_fd_vel)
         passive_pos_t = torch.stack(passive_pos)
         passive_vel_t = torch.stack(passive_vel)
+        passive_fd_vel_t = torch.stack(passive_fd_vel)
         physical_l0_t = torch.stack(physical_l0)
         loop_gap_t = torch.stack(loop_gap)
         tracking = drive_pos_t - target
@@ -208,8 +221,16 @@ def main() -> None:
             "drive_tracking_max_rad": float(torch.max(torch.abs(tracking))),
             "drive_velocity_rms_rad_s": _rms(drive_vel_t),
             "drive_velocity_max_rad_s": float(torch.max(torch.abs(drive_vel_t))),
+            "drive_fd_velocity_rms_rad_s": _rms(drive_fd_vel_t),
+            "drive_raw_minus_fd_velocity_rms_rad_s": _rms(drive_vel_t - drive_fd_vel_t),
+            "drive_raw_minus_fd_velocity_max_rad_s": float(torch.max(torch.abs(drive_vel_t - drive_fd_vel_t))),
             "passive_velocity_rms_rad_s": _rms(passive_vel_t),
             "passive_velocity_max_rad_s": float(torch.max(torch.abs(passive_vel_t))),
+            "passive_fd_velocity_rms_rad_s": _rms(passive_fd_vel_t),
+            "passive_raw_minus_fd_velocity_rms_rad_s": _rms(passive_vel_t - passive_fd_vel_t),
+            "passive_raw_minus_fd_velocity_max_rad_s": float(
+                torch.max(torch.abs(passive_vel_t - passive_fd_vel_t))
+            ),
             "passive_position_min_rad": torch.min(passive_pos_t, dim=0).values.cpu().tolist(),
             "passive_position_max_rad": torch.max(passive_pos_t, dim=0).values.cpu().tolist(),
             "physical_l0_mean_m": torch.mean(physical_l0_t, dim=0).cpu().tolist(),
