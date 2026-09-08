@@ -69,6 +69,15 @@ log() {
     echo "[FDU-PIPELINE] $(date -Is) $*"
 }
 
+play_task_for_training_task() {
+    case "$1" in
+        Robotics-Wheelbipe-FDU-wyw-Flat-v1) printf '%s\n' "Robotics-Wheelbipe-FDU-wyw-Flat-Play-v1" ;;
+        Robotics-Wheelbipe-FDU-wyw-Rough-v1) printf '%s\n' "Robotics-Wheelbipe-FDU-wyw-Rough-Play-v1" ;;
+        Robotics-Wheelbipe-FDU-wyw-Jump-v1) printf '%s\n' "Robotics-Wheelbipe-FDU-wyw-Jump-Play-v1" ;;
+        *) die "no post-training Play task mapping for training task: $1" ;;
+    esac
+}
+
 load_profile_defaults() {
     case "$1" in
         gpu-isaac)
@@ -288,6 +297,7 @@ start_pipeline() {
     local checkpoint_video_length="$DEFAULT_CHECKPOINT_VIDEO_LENGTH"
     local checkpoint_video_interval=""
     local gpu_request
+    local play_task
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -324,6 +334,7 @@ start_pipeline() {
     [[ -d "$repo" ]] || die "repository does not exist: $repo"
     [[ -x "$python" ]] || die "Isaac Lab Python does not exist: $python"
     [[ "$run_name" =~ ^[A-Za-z0-9._-]+$ ]] || die "run name may contain only letters, digits, dot, underscore, and hyphen"
+    play_task="$(play_task_for_training_task "$task")"
     gpu_request="$gpu"
     print_gpu_status
     gpu="$(resolve_gpu "$gpu")"
@@ -368,7 +379,7 @@ start_pipeline() {
         --python "$python"
         --gpu "$gpu"
         --train-pid "$train_pid"
-        --play-task "$DEFAULT_PLAY_TASK"
+        --play-task "$play_task"
         --run-name "$run_name"
         --video-length "$DEFAULT_FINAL_VIDEO_LENGTH"
     )

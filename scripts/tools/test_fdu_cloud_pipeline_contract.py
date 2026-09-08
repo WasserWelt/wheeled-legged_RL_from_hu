@@ -133,6 +133,17 @@ def test_native_training_video_interval_tracks_checkpoint_interval():
     assert '--video_interval="$checkpoint_video_interval"' in source
 
 
+def test_post_training_play_task_tracks_training_variant():
+    source = PIPELINE.read_text(encoding="utf-8")
+    for variant in ("Flat", "Rough", "Jump"):
+        assert (
+            f"Robotics-Wheelbipe-FDU-wyw-{variant}-v1) "
+            f"printf '%s\\n' \"Robotics-Wheelbipe-FDU-wyw-{variant}-Play-v1\""
+        ) in source
+    assert 'play_task="$(play_task_for_training_task "$task")"' in source
+    assert '--play-task "$play_task"' in source
+
+
 def test_pipeline_has_no_post_training_machine_shutdown_contract():
     sources = [PIPELINE.read_text(encoding="utf-8")]
     sources.extend(path.read_text(encoding="utf-8") for path in WORKFLOW_DOCS)
