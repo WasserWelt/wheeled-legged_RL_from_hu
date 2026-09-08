@@ -125,8 +125,8 @@ def main():
             actuator.cfg.class_type.__name__ == "DiffVelPDActuator"
             for actuator in env.robot.actuators.values()
         )
-        assert env.robot.cfg.spawn.articulation_props.solver_position_iteration_count == 8
-        assert env.robot.cfg.spawn.articulation_props.solver_velocity_iteration_count == 4
+        assert env.robot.cfg.spawn.articulation_props.solver_position_iteration_count == 16
+        assert env.robot.cfg.spawn.articulation_props.solver_velocity_iteration_count == 6
         assert env.cfg.wyw_l0_stability_monitor_enabled is True
         assert env.cfg.wyw_l0_stability_boundary_m == 0.14
         assert env.cfg.commands.heading_command is False
