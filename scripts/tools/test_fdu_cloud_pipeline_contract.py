@@ -144,6 +144,46 @@ def test_post_training_play_task_tracks_training_variant():
     assert '--play-task "$play_task"' in source
 
 
+def test_pipeline_forwards_optional_checkpoint_training_modes():
+    source = PIPELINE.read_text(encoding="utf-8")
+    assert '--checkpoint) checkpoint="$2"; shift 2' in source
+    assert '--resume-training|--resume_training) resume_training=1; shift' in source
+    assert 'checkpoint_args+=(--checkpoint "$checkpoint")' in source
+    assert 'checkpoint_args+=(--resume_training)' in source
+    assert '"${checkpoint_args[@]}"' in source
+    assert '--resume-training requires --checkpoint PATH' in source
+
+
+def test_resume_training_without_checkpoint_is_rejected_before_gpu_access(tmp_path):
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            str(PIPELINE),
+            "start",
+            "--repo",
+            str(tmp_path),
+            "--python",
+            "/bin/true",
+            "--resume-training",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "--resume-training requires --checkpoint PATH" in result.stderr
+    assert "GPU status" not in result.stdout
+
+
+def test_post_training_run_root_tracks_training_variant():
+    source = PIPELINE.read_text(encoding="utf-8")
+    for variant in ("flat", "rough", "jump"):
+        assert f'"wheelbipe_fdu_wyw_{variant}_direct"' in source
+    assert 'experiment_name="$(experiment_name_for_task "$play_task")"' in source
+    assert 'local run_root="$data_root/logs/rsl_rl/$experiment_name"' in source
+
+
 def test_pipeline_has_no_post_training_machine_shutdown_contract():
     sources = [PIPELINE.read_text(encoding="utf-8")]
     sources.extend(path.read_text(encoding="utf-8") for path in WORKFLOW_DOCS)

@@ -37,9 +37,11 @@ start options:
   --skip-gpu-check         Start without rejecting a GPU used by another process
   --task TASK              Training task id
   --num-envs N             Number of training environments (default: 4096)
-  --max-iterations N       PPO iterations (default: 5000)
+  --max-iterations N       PPO iterations to run; additional when resuming (default: 5000)
   --seed N                 Random seed (default: 42)
   --run-name NAME          Log directory suffix
+  --checkpoint PATH        Initialize policy weights from a checkpoint
+  --resume-training        Also restore optimizer/iteration state; requires --checkpoint
   --checkpoint-interval N  Iterations between checkpoints (default: 200)
   --checkpoint-video-length N
                            Steps per training video (default: 200)
@@ -75,6 +77,21 @@ play_task_for_training_task() {
         Robotics-Wheelbipe-FDU-wyw-Rough-v1) printf '%s\n' "Robotics-Wheelbipe-FDU-wyw-Rough-Play-v1" ;;
         Robotics-Wheelbipe-FDU-wyw-Jump-v1) printf '%s\n' "Robotics-Wheelbipe-FDU-wyw-Jump-Play-v1" ;;
         *) die "no post-training Play task mapping for training task: $1" ;;
+    esac
+}
+
+experiment_name_for_task() {
+    case "$1" in
+        Robotics-Wheelbipe-FDU-wyw-Flat-v1|Robotics-Wheelbipe-FDU-wyw-Flat-Play-v1)
+            printf '%s\n' "wheelbipe_fdu_wyw_flat_direct"
+            ;;
+        Robotics-Wheelbipe-FDU-wyw-Rough-v1|Robotics-Wheelbipe-FDU-wyw-Rough-Play-v1)
+            printf '%s\n' "wheelbipe_fdu_wyw_rough_direct"
+            ;;
+        Robotics-Wheelbipe-FDU-wyw-Jump-v1|Robotics-Wheelbipe-FDU-wyw-Jump-Play-v1)
+            printf '%s\n' "wheelbipe_fdu_wyw_jump_direct"
+            ;;
+        *) die "no experiment name mapping for task: $1" ;;
     esac
 }
 
@@ -230,7 +247,9 @@ watch_pipeline() {
     local play_task="$7"
     local run_name="$8"
     local video_length="$9"
-    local run_root="$data_root/logs/rsl_rl/wheelbipe_fdu_wyw_flat_direct"
+    local experiment_name
+    experiment_name="$(experiment_name_for_task "$play_task")"
+    local run_root="$data_root/logs/rsl_rl/$experiment_name"
     local artifact_prefix="$data_root/logs/cloud/${run_name}"
     local play_runtime_log="${artifact_prefix}.play_runtime.log"
 
@@ -293,6 +312,8 @@ start_pipeline() {
     local max_iterations="$DEFAULT_MAX_ITERATIONS"
     local seed="$DEFAULT_SEED"
     local run_name="flat_500hz_height015_030_4096_iter5000"
+    local checkpoint=""
+    local resume_training=0
     local checkpoint_interval="$DEFAULT_CHECKPOINT_INTERVAL"
     local checkpoint_video_length="$DEFAULT_CHECKPOINT_VIDEO_LENGTH"
     local checkpoint_video_interval=""
@@ -312,6 +333,8 @@ start_pipeline() {
             --max-iterations) max_iterations="$2"; shift 2 ;;
             --seed) seed="$2"; shift 2 ;;
             --run-name) run_name="$2"; shift 2 ;;
+            --checkpoint) checkpoint="$2"; shift 2 ;;
+            --resume-training|--resume_training) resume_training=1; shift ;;
             --checkpoint-interval) checkpoint_interval="$2"; shift 2 ;;
             --checkpoint-video-length) checkpoint_video_length="$2"; shift 2 ;;
             --checkpoint-video-interval) checkpoint_video_interval="$2"; shift 2 ;;
@@ -325,6 +348,12 @@ start_pipeline() {
     data_root="${data_root:-$PROFILE_DATA_ROOT}"
     python="${python:-$PROFILE_PYTHON}"
     gpu="${gpu:-$PROFILE_GPU}"
+    if [[ -n "$checkpoint" ]]; then
+        [[ -f "$checkpoint" ]] || die "checkpoint does not exist: $checkpoint"
+        checkpoint="$(realpath "$checkpoint")"
+    elif [[ "$resume_training" == "1" ]]; then
+        die "--resume-training requires --checkpoint PATH"
+    fi
     [[ "$checkpoint_interval" =~ ^[1-9][0-9]*$ ]] || die "checkpoint interval must be positive"
     [[ "$checkpoint_video_length" =~ ^[1-9][0-9]*$ ]] || die "checkpoint video length must be positive"
     if [[ -z "$checkpoint_video_interval" ]]; then
@@ -350,6 +379,16 @@ start_pipeline() {
 
     local train_log="$data_root/logs/cloud/${run_name}.train.log"
     local watch_log="$data_root/logs/cloud/${run_name}.post_play.log"
+    local checkpoint_args=()
+    if [[ -n "$checkpoint" ]]; then
+        checkpoint_args+=(--checkpoint "$checkpoint")
+        if [[ "$resume_training" == "1" ]]; then
+            checkpoint_args+=(--resume_training)
+            log "checkpoint=${checkpoint} mode=resume-training"
+        else
+            log "checkpoint=${checkpoint} mode=initial-weights"
+        fi
+    fi
     log "starting profile=${profile} task=${task} gpu=${gpu} envs=${num_envs} iterations=${max_iterations} seed=${seed}"
     log "data_root=${data_root} checkpoint_interval=${checkpoint_interval} video_interval=${checkpoint_video_interval}"
     nohup env CUDA_VISIBLE_DEVICES="$gpu" PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}" OMNI_KIT_ACCEPT_EULA=YES \
@@ -365,6 +404,7 @@ start_pipeline() {
         --video \
         --video_length="$checkpoint_video_length" \
         --video_interval="$checkpoint_video_interval" \
+        "${checkpoint_args[@]}" \
         --run_name="$run_name" > "$train_log" 2>&1 < /dev/null &
     local train_pid=$!
     printf '%s\n' "$train_pid" > "$data_root/logs/cloud/${run_name}.train.pid"
