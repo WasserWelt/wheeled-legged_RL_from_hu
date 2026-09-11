@@ -8,7 +8,6 @@ import csv
 import importlib.util
 import json
 import math
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -58,7 +57,7 @@ EXPECTED_EXPERIMENTS = {
     "rough": "wheelbipe_fdu_wyw_rough_direct",
     "jump": "wheelbipe_fdu_wyw_jump_direct",
 }
-VIDEO_FPS = 15.0
+VIDEO_FPS = 30.0
 VIDEO_RESOLUTION = (960, 540)
 # H.264 keeps the recordings free of the blocky artifacts the legacy mp4v
 # (MPEG-4 Part 2) encoder produced; libx264 is provided by imageio-ffmpeg.
@@ -244,147 +243,25 @@ def _concat_profile_videos(
 
 
 def _write_baseline_comparison_video(
-    output_dir: Path, baseline_video: Path, current_video: Path
-) -> Path:
-    output = output_dir / "comparison.mp4"
-    command = [
-        "ffmpeg", "-y", "-loglevel", "error", "-i", str(baseline_video), "-i", str(current_video),
-        "-filter_complex",
-        "[0:v]setpts=PTS-STARTPTS,drawtext=text='BASELINE':x=24:y=h-th-24:fontsize=28:fontcolor=yellow:box=1:boxcolor=black@0.55[left];"
-        "[1:v]setpts=PTS-STARTPTS,drawtext=text='CURRENT':x=24:y=h-th-24:fontsize=28:fontcolor=cyan:box=1:boxcolor=black@0.55[right];"
-        "[left][right]hstack=inputs=2:shortest=1[v]",
-        "-map", "[v]", "-r", str(VIDEO_FPS), "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        str(output),
-    ]
-    completed = subprocess.run(command, cwd=REPO_ROOT, check=False, capture_output=True, text=True)
-    if completed.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
-        raise RuntimeError(f"cannot create baseline comparison video: {completed.stderr.strip()}")
-    return output
-
-
-def _format_metric_value(value: float, unit: str) -> str:
-    if unit == "%":
-        return f"{100.0 * value:.1f}%"
-    if unit == "count":
-        return f"{value:.2f}"
-    return f"{value:.3f} {unit}"
-
-
-def _write_comparison_chart(
     output_dir: Path,
-    *,
-    status: str,
-    comparison: dict[str, Any],
-    aggregate: dict[str, Any],
+    baseline_video: Path,
+    current_video: Path,
+    baseline_trace: Path,
 ) -> Path:
-    """Render one aggregate row per metric; robust envs are never expanded."""
-    os.environ.setdefault("MPLCONFIGDIR", "/tmp/wyw_verify_matplotlib")
-    import matplotlib
+    from wyw_verify_presentation import compose_video
 
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    metrics = aggregate["metrics"]
-    baseline_color = "#4B5563"
-    current_color = "#0891B2"
-    green = "#15803D"
-    red = "#B91C1C"
-    pale = "#F3F4F6"
-
-    relative_current = []
-    for metric in metrics:
-        baseline_value = metric["baseline"]
-        current_value = metric["current"]
-        if math.isclose(baseline_value, 0.0):
-            relative_current.append(100.0 if math.isclose(current_value, 0.0) else 200.0)
-        else:
-            relative_current.append(100.0 * current_value / abs(baseline_value))
-
-    figure_height = max(7.6, 2.4 + 0.46 * len(metrics))
-    fig = plt.figure(figsize=(13.5, figure_height), facecolor="white")
-    grid = fig.add_gridspec(2, 1, height_ratios=(1.15, 5.0), hspace=0.18)
-    header = fig.add_subplot(grid[0])
-    header.axis("off")
-    header.text(0.0, 0.92, f"WYW {args_cli.variant.title()} Baseline Comparison", fontsize=22, weight="bold", va="top")
-    header.text(
-        0.0,
-        0.54,
-        f"Median across {aggregate['scenario_count']} scenario medians; robust environments are aggregated per scenario",
-        fontsize=10.5,
-        color="#4B5563",
-        va="top",
-    )
-    profile_parts = []
-    for profile in ("nominal", "robust"):
-        result = comparison["profiles"][profile]
-        profile_parts.append(f"{profile.title()} {result['passed']}/{result['total']}")
-    safety_passed = sum(
-        int(item["safety_pass"])
-        for result in comparison["profiles"].values()
-        for item in result["scenarios"]
-    )
-    total = sum(result["total"] for result in comparison["profiles"].values())
-    summary = f"{status}     Safety {safety_passed}/{total}     " + "     ".join(profile_parts)
-    header.text(
-        0.0,
-        0.12,
-        summary,
-        fontsize=12,
-        weight="bold",
-        color=green if status == "PASS" else red,
-        va="bottom",
-        bbox={"boxstyle": "round,pad=0.45", "facecolor": "#F0FDF4" if status == "PASS" else "#FEF2F2", "edgecolor": "none"},
+    return compose_video(
+        output_dir / "comparison.mp4", baseline_video, current_video,
+        output_dir / "trace.json", baseline_trace,
     )
 
-    axis = fig.add_subplot(grid[1])
-    y = np.arange(len(metrics))
-    height = 0.31
-    axis.barh(y - height / 2, [100.0] * len(metrics), height, color=baseline_color, label="Baseline")
-    axis.barh(y + height / 2, relative_current, height, color=current_color, label="Current")
-    axis.axvline(100.0, color="#9CA3AF", linewidth=1, linestyle="--", zorder=0)
-    max_relative = max([100.0, *relative_current])
-    axis.set_xlim(0.0, max(125.0, max_relative * 1.22))
-    axis.set_yticks(y, [metric["label"] for metric in metrics], fontsize=11)
-    axis.invert_yaxis()
-    axis.set_xlabel("Relative magnitude (baseline = 100)", color="#4B5563")
-    axis.grid(axis="x", color="#E5E7EB", linewidth=0.8)
-    axis.set_axisbelow(True)
-    axis.spines[["top", "right", "left"]].set_visible(False)
-    axis.spines["bottom"].set_color("#D1D5DB")
-    axis.tick_params(axis="y", length=0)
-    axis.legend(
-        loc="lower right", bbox_to_anchor=(1.0, 1.01), frameon=False, ncol=2
-    )
 
-    x_text = axis.get_xlim()[1] * 0.995
-    for index, metric in enumerate(metrics):
-        baseline_text = _format_metric_value(metric["baseline"], metric["unit"])
-        current_text = _format_metric_value(metric["current"], metric["unit"])
-        change = metric["improvement_percent"]
-        if math.isclose(metric["improvement"], 0.0, abs_tol=1e-12):
-            change_text = "same"
-        elif change is None:
-            change_text = "better" if metric["improvement"] > 0 else "same" if metric["pass"] else "worse"
-        elif change > 0:
-            change_text = f"{change:+.1f}% better"
-        else:
-            change_text = f"{abs(change):.1f}% worse"
-        color = green if metric["pass"] else red
-        axis.text(x_text, index - height / 2, baseline_text, ha="right", va="center", fontsize=9, color=baseline_color)
-        axis.text(x_text, index + height / 2, f"{current_text}  ({change_text})", ha="right", va="center", fontsize=9, color=color, weight="bold")
+def _write_comparison_chart(output_dir, *, status, comparison, reports, baseline):
+    from wyw_verify_presentation import write_charts
 
-    fig.text(
-        0.012,
-        0.012,
-        "Lower is better for tracking error, tilt and action variation; higher is better for survival and task outcomes.",
-        fontsize=9,
-        color="#6B7280",
-    )
-    path = output_dir / "comparison.png"
-    fig.savefig(path, dpi=160, bbox_inches="tight", facecolor=pale)
-    plt.close(fig)
-    return path
+    write_charts(output_dir, variant=args_cli.variant, status=status,
+                 comparison=comparison, reports=reports, baseline=baseline)
+    return output_dir / "comparison.png"
 
 
 def _cleanup_intermediates(
@@ -421,12 +298,23 @@ def _load_baseline_package() -> dict[str, Any]:
 def _finalize_reports(output_dir: Path, reports: list[dict[str, Any]]) -> int:
     if args_cli.checkpoint is None:
         raise ValueError("--checkpoint is required to finalize verification reports")
+    if (args_cli.mode == "evaluate"
+            and output_dir.resolve() == _load_baseline_config()["package_dir"].resolve()):
+        raise ValueError("evaluate output directory must differ from the baseline package directory")
     scenarios = _selected_scenarios()
     profile_summaries = {
         report["profile"]: report["scenario_summaries"] for report in reports
     }
     profile_video_names = [Path(report["video"]).name for report in reports]
+    profile_trace_names = [Path(report["trace"]).name for report in reports]
     combined_video = _concat_profile_videos(output_dir, reports, "combined.mp4")
+    frames = []
+    for profile in ("nominal", "robust"):
+        report = next(r for r in reports if r["profile"] == profile)
+        frames.extend(json.loads(Path(report["trace"]).read_text(encoding="utf-8"))["frames"])
+    (output_dir / "trace.json").write_text(
+        json.dumps({"fps": VIDEO_FPS, "frames": frames}, allow_nan=False) + "\n", encoding="utf-8"
+    )
     comparison: dict[str, Any] | None = None
     aggregate: dict[str, Any] | None = None
     chart: Path | None = None
@@ -443,6 +331,7 @@ def _finalize_reports(output_dir: Path, reports: list[dict[str, Any]]) -> int:
             video="baseline.mp4",
         )
         baseline["video"] = "baseline.mp4"
+        baseline["trace"] = "trace.json"
         (output_dir / "baseline.json").write_text(
             json.dumps(baseline, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
@@ -461,16 +350,25 @@ def _finalize_reports(output_dir: Path, reports: list[dict[str, Any]]) -> int:
         baseline_video = Path(baseline["video"])
         if not baseline_video.is_absolute():
             baseline_video = (_load_baseline_config()["package_dir"] / baseline_video).resolve()
-        final_video = _write_baseline_comparison_video(output_dir, baseline_video, combined_video)
+        baseline_trace = Path(baseline.get("trace", "trace.json"))
+        if not baseline_trace.is_absolute():
+            baseline_trace = (_load_baseline_config()["package_dir"] / baseline_trace).resolve()
+        current_video = output_dir / "current.mp4"
+        combined_video.replace(current_video)
+        final_video = output_dir / "comparison.mp4"
         status = "PASS" if comparison["pass"] else "FAIL"
         exit_code = 0 if comparison["pass"] else 1
         chart = _write_comparison_chart(
-            output_dir, status=status, comparison=comparison, aggregate=aggregate
+            output_dir, status=status, comparison=comparison, reports=reports, baseline=baseline,
+        )
+        _write_baseline_comparison_video(
+            output_dir, baseline_video, current_video, baseline_trace
         )
     if args_cli.mode not in {"baseline", "calibrate"}:
         _write_result_table(output_dir, reports, comparison, baseline)
     for report in reports:
         report["video"] = str(final_video)
+        report.pop("trace", None)
     final_report = {
         "schema_version": V.VERIFY_SCHEMA_VERSION,
         "status": status,
@@ -485,6 +383,7 @@ def _finalize_reports(output_dir: Path, reports: list[dict[str, Any]]) -> int:
         "checkpoint": str(args_cli.checkpoint.resolve()),
         "git": _git_metadata(),
         "video": str(final_video),
+        "trace": str(output_dir / "trace.json"),
         "chart": None if chart is None else str(chart),
         "baseline": None
         if args_cli.mode in {"baseline", "calibrate"}
@@ -498,7 +397,7 @@ def _finalize_reports(output_dir: Path, reports: list[dict[str, Any]]) -> int:
         (output_dir / "report.json").write_text(
             json.dumps(final_report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-    for name in profile_video_names:
+    for name in [*profile_video_names, *profile_trace_names]:
         path = output_dir / name
         if path.is_file():
             path.unlink()
@@ -506,7 +405,7 @@ def _finalize_reports(output_dir: Path, reports: list[dict[str, Any]]) -> int:
     if combined_video.is_file():
         combined_video.unlink()
     if args_cli.mode == "baseline" or args_cli.mode == "calibrate":
-        # baseline.json and baseline.mp4 are the persistent reference package.
+        # The compact baseline package includes telemetry for synchronized comparisons.
         (output_dir / "baseline.json").write_text(
             json.dumps(baseline, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
@@ -770,15 +669,12 @@ class _VideoRecorder:
         self.path = path
         self.writer = None
         self.accumulator = 0.0
+        self.frames = []
+        self.scenario_id = None
+        self.camera_target = None
+        self.last_frame = None
 
-    def capture(
-        self,
-        scenario,
-        phase: str,
-        elapsed: float,
-        active: int,
-        actions: torch.Tensor,
-    ) -> None:
+    def capture(self, scenario, phase, elapsed, active, actions, failure=None) -> None:
         import cv2
 
         self.accumulator += VIDEO_FPS * float(self.raw.step_dt)
@@ -786,57 +682,70 @@ class _VideoRecorder:
             return
         self.accumulator -= 1.0
         root = self.raw.robot.data.root_pos_w[0].detach().cpu().numpy()
-        eye = root + np.array((-3.0, -3.0, 1.5))
+        if self.scenario_id != scenario.id:
+            self.scenario_id = scenario.id
+            self.camera_target = root.copy()
+            self.last_frame = None
+        # Keep camera height fixed within a scenario so vertical motion stays visible.
+        self.camera_target[:2] += 0.3 * (root[:2] - self.camera_target[:2])
         self.raw.viewport_camera_controller.set_view_env_index(0)
-        self.raw.viewport_camera_controller.update_view_location(eye=eye, lookat=root)
-        frame = self.gym_env.render()
-        if frame is None:
-            raise RuntimeError("environment render returned no frame")
-        if frame.shape[-1] == 4:
-            frame = frame[..., :3]
-        frame = np.ascontiguousarray(frame)
-        command = (
-            float(self.raw.command[0, 0].item()),
-            float(self.raw.command[0, 2].item()),
-            float(self.raw._get_observation_height_cmd()[0].item()),
+        self.raw.viewport_camera_controller.update_view_location(
+            eye=self.camera_target + np.array((-2.2, -2.2, 1.1)), lookat=self.camera_target
         )
-        action = actions[0].detach().cpu().tolist()
-        line_columns = (
-            (
-                f"WYW {scenario.variant.upper()} / {scenario.profile.upper()}",
-                scenario.id,
-                f"{phase}  t={elapsed:5.2f}s  active={active}/{self.raw.num_envs}",
-            ),
-            (
-                f"cmd   vx={command[0]:+5.2f} yaw={command[1]:+5.2f} h={command[2]:.3f}",
-                f"act L lf0={action[0]:+6.3f} l20={action[1]:+6.3f} whl={action[2]:+6.3f}",
-                f"act R rf0={action[3]:+6.3f} r20={action[4]:+6.3f} whl={action[5]:+6.3f}",
-            ),
-        )
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (12, 10), (frame.shape[1] - 12, 110), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.58, frame, 0.42, 0.0, frame)
-        for column_index, lines in enumerate(line_columns):
-            x = 24 if column_index == 0 else frame.shape[1] // 2
-            for line_index, line in enumerate(lines):
-                cv2.putText(
-                    frame,
-                    line,
-                    (x, 34 + 31 * line_index),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.54,
-                    (255, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
+        if failure:
+            frame = (self.last_frame.copy() if self.last_frame is not None
+                     else np.full((VIDEO_RESOLUTION[1], VIDEO_RESOLUTION[0], 3), 235, dtype=np.uint8))
+        else:
+            frame = self.gym_env.render()
+            if frame is None:
+                raise RuntimeError("environment render returned no frame")
+            frame = np.ascontiguousarray(frame[..., :3]).copy()
+            self.last_frame = frame.copy()
+        command = {
+            "vx": 0.0 if phase == "settle" else scenario.vx,
+            "yaw": 0.0 if phase == "settle" else scenario.yaw,
+            "height": scenario.height,
+        }
+        state = {}
+        for name, value in _state_metrics(self.raw, scenario.variant, scenario).items():
+            number = float(value[0].item())
+            state[name] = number if math.isfinite(number) and not failure else None
+        self.frames.append({
+            "scenario_id": scenario.id, "profile": scenario.profile, "phase": phase,
+            "elapsed": float(elapsed),
+            "time": float(elapsed + (scenario.settle_s if phase == "score" else 0.0)),
+            "settle_s": scenario.settle_s, "env_id": 0, "active": active,
+            "failure": failure, "state": state, "command": command,
+            "actions": actions[0].detach().cpu().tolist(),
+            "tilt_limit": V.absolute_metric_limits(scenario.variant, scenario).get("tilt_peak_deg"),
+        })
+        if failure:
+            lines = [f"{scenario.id} | {phase} | env 0",
+                     f"FAILED: {failure} | last valid frame"]
+        else:
+            def value(name):
+                return "N/A" if state[name] is None else f"{state[name]:+.3f}"
+            lines = [
+                f"{scenario.id} | {phase} | env 0 | active={active}/{self.raw.num_envs}",
+                f"vx {value('vx')} / {command['vx']:+.2f} m/s   "
+                f"yaw {value('yaw')} / {command['yaw']:+.2f} rad/s   "
+                f"h {value('height')} / {command['height']:.2f} m   tilt {value('tilt')} deg",
+            ]
+        cv2.rectangle(frame, (0, 0), (frame.shape[1], 72), (245, 245, 245), -1)
+        for i, line in enumerate(lines):
+            cv2.putText(frame, line, (16, 27 + 30 * i), cv2.FONT_HERSHEY_SIMPLEX,
+                        .52, (35, 35, 35), 1, cv2.LINE_AA)
         if self.writer is None:
             self.writer = _open_video_writer(self.path, VIDEO_FPS)
-        # cv2.putText drew on the RGB array above; the H.264 writer expects RGB.
         self.writer.append_data(frame)
 
     def close(self, *, validate: bool = True) -> None:
         if self.writer is not None:
             self.writer.close()
+        self.path.with_suffix(".trace.json").write_text(
+            json.dumps({"fps": VIDEO_FPS, "frames": self.frames}, allow_nan=False) + "\n",
+            encoding="utf-8",
+        )
         if validate and (not self.path.is_file() or self.path.stat().st_size == 0):
             raise RuntimeError(f"verification produced no video: {self.path}")
 
@@ -940,6 +849,7 @@ def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[d
                 elapsed,
                 int(active.sum().item()),
                 applied_actions,
+                failure=reasons[0],
             )
             after = _state_metrics(raw, scenario.variant, scenario)
             return before, after, rewards, applied_actions
@@ -1243,6 +1153,7 @@ def _run_worker() -> dict[str, Any]:
         "scenario_summaries": summaries,
         "samples": all_samples,
         "video": str(video_path),
+        "trace": str(video_path.with_suffix(".trace.json")),
     }
     V.validate_profile_report(report)
     (output_dir / f"profile_report.{args_cli.profile}.json").write_text(

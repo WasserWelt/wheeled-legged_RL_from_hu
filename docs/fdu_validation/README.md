@@ -77,23 +77,34 @@ spring.
 ## Standard policy verification play
 
 `scripts/rsl_rl/play_wyw_verify.py` runs the versioned WYW policy-performance
-suite. Flat has 17 nominal and 3 robust scenarios, Rough has 35 nominal and 4
+suite. Flat has 17 nominal and 4 robust scenarios, Rough has 35 nominal and 4
 robust scenarios, and Jump has 3 nominal and 2 robust scenarios. Rough excludes
 flat terrain and includes both pyramid stairs and 5/10/15/20 cm single steps.
-The maximum simulated/video duration across all three tasks is 298.5 seconds.
+The maximum simulated/video duration across all three tasks is 330.0 seconds.
 
 Create the fixed Flat baseline once:
 
 ```bash
 python scripts/rsl_rl/play_wyw_verify.py \
   --variant flat \
-  --checkpoint logs/rsl_rl/2026-09-03_19-04-10_flat_8192_5000/wheelbipe_fdu_wyw_flat_direct.pt \
+  --checkpoint logs/rsl_rl/2026-09-07_14-56-06_flat_8192_5000_diff_vel/model_4999.pt \
   --mode baseline --profile all --headless
 ```
 
 The baseline path is configured in `configs/wyw_verify_baseline.json`.
-Baseline creation writes only `baseline.json` and `baseline.mp4`; nominal and
-robust are concatenated in that order. Evaluate a new checkpoint with:
+Baseline creation writes `baseline.json`, `baseline.mp4`, and `trace.json`;
+nominal and robust are concatenated in that order. The trace stores env 0
+telemetry at video-frame times so later comparisons can align by scenario,
+phase, and simulated time rather than by raw frame index.
+
+The verifier accepts the known v2 finite-difference-velocity training contract
+used by the diffvel/no-upreward runs, the v3 material-split contract, and the
+v4 Flat wheel-contact-loss contract. Their
+action, observation, velocity-estimator, timing, and Sequence network contracts
+are identical; the actual training semantics version is recorded in each
+profile report. Evaluation always uses the current WYW environment settings.
+
+Evaluate a new checkpoint with:
 
 ```bash
 python scripts/rsl_rl/play_wyw_verify.py \
@@ -102,21 +113,65 @@ python scripts/rsl_rl/play_wyw_verify.py \
   --mode evaluate --profile all --headless
 ```
 
-Evaluation requires the fixed baseline package and writes only `report.json`,
-`results.csv`, `comparison.mp4`, and `comparison.png`. The comparison video is left=baseline and
-right=current; each side contains nominal followed by robust. Hashes are not
-used. Structural metadata, scenario IDs/order, metric completeness, safety,
-and the nominal/robust 90% gates remain validated. The image compares each
-metric's median across scenario medians. Robust environments are summarized
-within their scenario first and are never shown as ten separate entries.
-In addition to tracking, attitude, survival, and task outcomes, schema v3
+Evaluation writes `report.json`, `results.csv`, `comparison.mp4`,
+`comparison.png`, `current.mp4`, `trace.json`, grouped metric sheets, and a
+`charts.md` index. Start with `comparison.png` for the acceptance result,
+profile pass counts, failure events, and the largest failed metric checks. The
+grouped tracking, stability, smoothness, actuator, and outcome sheets show one
+physical unit per axis, with gray baseline points and blue/red current points.
+`robust_distributions.png` shows the individual current environments and the
+baseline range for four task-relevant metrics. Robust environments are still
+summarized within their scenario for acceptance and are never treated as ten
+independent scenarios.
+
+The comparison video is 1920x1080: baseline is on the left, current is on the
+right, and synchronized forward-speed, yaw-rate, height, and tilt plots occupy
+the lower band. A moving time cursor connects the plots to the two views. The
+composer validates scenario, phase, command, duration, and frame coverage when
+both traces are available; failed env 0 frames are frozen and labelled so an
+automatic reset cannot look like recovery. Each side contains nominal followed
+by robust. Hashes are not used. Structural metadata, scenario IDs/order, metric
+completeness, safety, and the nominal/robust 90% gates remain validated.
+In addition to tracking, attitude, survival, and task outcomes, schema v4
 records normalized policy-action smoothness separately for the four leg actions
 and two wheel actions. It reports RMS first differences (action change per
 control step) and RMS second differences (high-frequency action jitter); lower
 is better for all four. Only scored samples are used, and the first one/two
 samples are omitted where the corresponding difference has no in-window
-history. The video overlay shows env 0's current ``cmd=[vx, yaw, height]`` and
-all six runner-clipped policy actions in
-``lf0, l20, left wheel, rf0, r20, right wheel`` order.
-Because these fields are required comparison metrics, an older schema-v2
-baseline must be regenerated once before evaluating new checkpoints.
+history. Flat also records height peak-to-peak, vertical-velocity RMS, two-frame
+filtered missing wheel contacts per step, wheel-torque saturation rate, and
+wheel-velocity-target saturation rate. The nominal and
+robust ``vx=+/-2 m/s`` cases run for 10 seconds and have absolute peak-tilt,
+height-excursion, and wheel-contact-loss gates. The source-video overlay shows
+env 0's actual/commanded forward speed, yaw rate and height plus actual tilt.
+Because these fields are required comparison metrics, an older schema baseline
+must be regenerated once before evaluating new checkpoints.
+
+Charts and the final comparison video can be regenerated from an existing
+evaluation without launching Isaac Sim:
+
+```bash
+python scripts/rsl_rl/wyw_verify_presentation.py \
+  --report <evaluate_output>/report.json --video
+```
+
+To evaluate the same checkpoint iteration across all compatible run directories,
+preview the selection first and then run the serial GPU batch:
+
+```bash
+python scripts/rsl_rl/run_wyw_verify_batch.py \
+  --variant flat --iteration 4999 --dry-run
+
+python scripts/rsl_rl/run_wyw_verify_batch.py \
+  --variant flat --iteration 4999 --device cuda:0
+```
+
+`--checkpoint-name NAME.pt` selects an exact basename, while `--latest` selects
+the numerically highest `model_N.pt` in each run. `--run-glob` limits the run
+directories and `--skip-existing` reuses complete reports for the exact
+checkpoint. Extra `play_wyw_verify.py` arguments go after `--`. Runs execute
+sequentially and continue after policy failures or execution errors by default.
+Each evaluation keeps `batch_driver.log`; timestamped JSON and CSV summaries are
+written below `logs/rsl_rl/batch_verification/`. Exit status is 0 when all
+policies pass, 1 when at least one policy fails acceptance, and 2 for execution
+errors or an empty selection.
