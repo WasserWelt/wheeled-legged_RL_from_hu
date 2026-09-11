@@ -58,6 +58,7 @@ from .fdu_semantics import (
     compute_fdu_failure_termination_reward,
     compute_fdu_jump_reward_terms,
     compute_fdu_plane_reward_terms,
+    compute_fdu_wheel_contact_loss,
     compute_fdu_flat_command_curriculum_transition,
     compute_fdu_rough_curriculum_transition,
     filter_fdu_wheel_contacts,
@@ -326,6 +327,9 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
         self._wyw_last_wheel_contacts = torch.zeros(
             self.num_envs, 2, dtype=torch.bool, device=self.device
         )
+        self._wyw_last_reward_wheel_contacts = torch.zeros(
+            self.num_envs, 2, dtype=torch.bool, device=self.device
+        )
         self._wyw_base_air_time = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
         self._wyw_l0_boundary_episode_samples = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
@@ -415,6 +419,7 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             self._wyw_l0_boundary_episode_samples[reset_env_ids] = 0
         self._wyw_obs_hist[reset_env_ids] = 0.0
         self._wyw_history_needs_fill[reset_env_ids] = True
+        self._wyw_last_reward_wheel_contacts[reset_env_ids] = False
         self._sample_wyw_lin_vel_command(reset_env_ids)
         self._clear_termination_duration_buffers(
             reset_env_ids,
@@ -830,6 +835,20 @@ class WheelbipeWywEnv(Wheelbipe25V3Env):
             upright_orientation_sigma=self.cfg.upright_orientation_sigma,
             jump=jump_enabled,
         )
+        if bool(getattr(self.cfg, "wyw_wheel_contact_reward_enabled", False)):
+            net_forces = self.contact_sensor.data.net_forces_w
+            if net_forces is not None and len(self._desired_contact_link_idx) == 2:
+                contact_now = (
+                    net_forces[:, self._desired_contact_link_idx, 2]
+                    > float(self.cfg.wyw_flight_contact_force)
+                )
+                filtered_contact = contact_now | self._wyw_last_reward_wheel_contacts
+                terms["wheel_contact_loss"] = compute_fdu_wheel_contact_loss(filtered_contact)
+                self._wyw_last_reward_wheel_contacts.copy_(contact_now)
+            else:
+                terms["wheel_contact_loss"] = torch.zeros(
+                    self.num_envs, dtype=torch.float, device=self.device
+                )
         if bool(getattr(self.cfg, "wyw_jump_enabled", False)):
             terms.update(self._compute_wyw_jump_terms(leg_lengths))
             terms["pen_theta_no0"] = torch.square(torch.stack((left_theta, right_theta), dim=-1)).sum(dim=-1)

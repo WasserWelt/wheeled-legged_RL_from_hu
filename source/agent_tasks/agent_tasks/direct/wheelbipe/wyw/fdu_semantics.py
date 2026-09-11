@@ -274,6 +274,18 @@ def filter_fdu_wheel_contacts(
     return torch.all(~contact_filt, dim=-1), torch.any(contact_filt, dim=-1), contact_now
 
 
+def compute_fdu_wheel_contact_loss(wheel_contact: torch.Tensor) -> torch.Tensor:
+    """Count missing wheel contacts: one lost wheel costs 1, both cost 2."""
+    if wheel_contact.ndim < 1 or wheel_contact.shape[-1] != 2:
+        raise ValueError(
+            "FDU wheel contact tensor must end in the two wheel channels, got "
+            f"{wheel_contact.shape}"
+        )
+    if wheel_contact.dtype != torch.bool:
+        raise TypeError("FDU wheel contact tensor must have bool dtype")
+    return torch.count_nonzero(~wheel_contact, dim=-1).to(dtype=torch.float32)
+
+
 def aggregate_fdu_rewards(
     raw_terms: Mapping[str, torch.Tensor],
     weights: Mapping[str, float],

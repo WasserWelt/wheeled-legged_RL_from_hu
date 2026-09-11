@@ -31,6 +31,7 @@ from isaaclab.utils.io import dump_yaml  # noqa: E402
 
 from agent_tasks.direct.wheelbipe.wyw.env import WheelbipeWywEnv  # noqa: E402
 from agent_tasks.direct.wheelbipe.wyw.env_cfg import (  # noqa: E402
+    FDU_FLAT_REWARDS,
     FDU_JUMP_REWARDS,
     FDU_PLANE_REWARDS,
     WheelbipeWywFlatEnvCfg,
@@ -82,7 +83,10 @@ def main():
         assert not hasattr(env.cfg, "wyw_safe_theta0_abs")
         assert env.cfg.termination_duration_enabled is True
         assert env.cfg.termination_duration_steps == 100
-        assert env.cfg.wyw_training_semantics_version == "fdu_flat_p0_direct_bars_fd_vel_v3_material_split"
+        assert (
+            env.cfg.wyw_training_semantics_version
+            == "fdu_flat_p0_direct_bars_fd_vel_v4_wheel_contact_loss"
+        )
         assert env.cfg.wyw_joint_velocity_source == "wrapped_position_difference"
         assert env.cfg.wyw_joint_velocity_diff_dt == env.cfg.sim.dt == 0.002
         assert env.cfg.wyw_collision_contact_force == 0.1
@@ -357,7 +361,11 @@ def main():
             first_after_reset = records[previous_record_counts[actuator_name]]
             assert torch.count_nonzero(first_after_reset["fd_velocity"][reset_id]) == 0
 
-        expected_rewards = FDU_JUMP_REWARDS if args_cli.variant == "jump" else FDU_PLANE_REWARDS
+        expected_rewards = {
+            "flat": FDU_FLAT_REWARDS,
+            "rough": FDU_PLANE_REWARDS,
+            "jump": FDU_JUMP_REWARDS,
+        }[args_cli.variant]
         assert list(env.cfg.rewards) == list(expected_rewards)
         assert set(env._last_reward_terms) == set(expected_rewards)
         reward_bound = env.cfg.clip_single_reward * env.step_dt + 1.0e-6
@@ -370,6 +378,10 @@ def main():
             assert env.cfg.rewards["action_rate"] == -0.3
             assert env.cfg.rewards["action_smooth"] == -0.3
             assert env.cfg.rewards["dof_acc"] == -3.0e-7
+        if args_cli.variant == "flat":
+            assert env.cfg.rewards["wheel_contact_loss"] == -1.0
+        else:
+            assert "wheel_contact_loss" not in env.cfg.rewards
 
         # Runtime YAML is the reproducibility contract used by cloud runs.
         with tempfile.TemporaryDirectory(dir="/tmp") as dump_dir:
@@ -377,7 +389,7 @@ def main():
             dump_yaml(str(env_yaml), env.cfg)
             dumped = env_yaml.read_text(encoding="utf-8")
             for required in (
-                "wyw_training_semantics_version: fdu_flat_p0_direct_bars_fd_vel_v3_material_split",
+                "wyw_training_semantics_version: fdu_flat_p0_direct_bars_fd_vel_v4_wheel_contact_loss",
                 "wyw_joint_velocity_source: wrapped_position_difference",
                 "wyw_joint_velocity_diff_dt: 0.002",
                 "wyw_failure_contact_force: 10.0",

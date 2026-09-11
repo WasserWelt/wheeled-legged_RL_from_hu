@@ -111,7 +111,8 @@ acceleration `0.0025`、critic torque `0.05`、height scan `5`。action 段不�
 `dof_vel` 的六维输入与执行器相同，来自每个 2 ms 物理子步的编码器位置差分；history 最新帧
 包含 decimation 的第 5 个子步。critic 的 `dof_acc` 保持 Fudan 符号，按 100 Hz 策略步计算
 `(dof_vel[t-1] - dof_vel[t]) / 0.01`。当前语义版本为
-`fdu_flat_p0_direct_bars_fd_vel_v3_material_split`，旧 `v1/v2` checkpoint 不兼容，不能续训或用于本版本验证。
+`fdu_flat_p0_direct_bars_fd_vel_v4_wheel_contact_loss`。v3 checkpoint 可作为策略权重初始化，
+但不能恢复 optimizer/iteration 做完整续训；验证器仍接受已知的 v2/v3/v4 合同。
 
 ## 奖励
 
@@ -136,6 +137,7 @@ Flat/Rough 的权重（raw term 乘 weight 乘 `step_dt=0.01` 后，再按单项
 | `action_smooth`             |    -0.3 | 惩罚四维腿动作的二阶差分 `a[t]-2a[t-1]+a[t-2]` |
 | `collision`                 |      -1 | 统计 base 和非轮腿部 link 上超过 `0.1 N` 的接触个数 |
 | `dof_pos_limits`            |      -1 | 惩罚四个腿部驱动杆超出 97% 软关节范围的距离 |
+| `wheel_contact_loss`        |      -1 | 仅 Flat：两帧滤波后按离地轮数惩罚，单轮为 1、双轮为 2 |
 
 Jump 与 Flat/Rough 不同的奖励项如下；未列出的 `tracking_ang_vel` 和 `collision` 权重及含义相同：
 
@@ -169,12 +171,15 @@ Jump 不使用 Flat/Rough 的 `base_height`、`upright_orientation`、`lin_vel_z
   奖励为 `exp(-(gx^2+gy^2)/0.025) * (gz<0)`。Flat/Rough 的正向速度跟踪项另乘
   RobotLab gate：`clamp(-gz, 0, 0.7) / 0.7`。
 - `action_smooth` 使用 `a[t] - 2*a[t-1] + a[t-2]` 的腿部四维。
+- Flat 的 `wheel_contact_loss=-1.0`：轮子当前帧或上一策略帧有大于 `1 N` 的世界系
+  z 向接触力就视为接触。单轮离地 raw loss 为 `1`，双轮为 `2`，对应每个 100 Hz
+  policy step 的奖励分别为 `-0.01`、`-0.02`。Rough 和 Jump 不启用该项。
 - Jump 腾空项由两轮接触过滤器决定；`leg_tuck` 目标 `L0=0.23 m`，起跳伸展目标
   `L0=0.31 m`，飞行基座高度 `0.65 m`，起跳竖直速度阈值 `0.15 m/s`，接触阈值 `1 N`。
 - Jump `nominal_state` 包含 theta 不对称项以及 `10*(L0_left-L0_right)^2`。
 
-Flat/Rough `clip_single_reward=1.0`，Jump 为 `2.5`，所以单项最终步长裁剪分别为
-`±0.01` 和 `±0.025`。`only_positive_rewards=False`。姿态/接触持续失败终止会在单项裁剪之后
+Flat、Rough 和 Jump 当前的 `clip_single_reward` 均为 `2.5`，所以单项最终步长裁剪为
+`±0.025`。`only_positive_rewards=False`。姿态/接触持续失败终止会在单项裁剪之后
 额外加入：Flat/Rough 为 `-500 * 0.01 = -5.0`，Jump 为 `-200 * 0.01 = -2.0`；timeout、
 Rough 地形越界和数值安全重置不加该惩罚。三个任务的 collision 都检查映射到的 base/非轮腿部
 link 是否存在大于 `0.1 N` 的接触。当前代码有意保留 Fudan 的 `base_air_time *= ~in_flight` 跨 reset

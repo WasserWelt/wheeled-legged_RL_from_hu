@@ -48,7 +48,7 @@ FDU_PLANE_REWARDS = OrderedDict(
     tracking_lin_vel_enhance=1.0,
     tracking_ang_vel=1.0,
     base_height=1.0,
-    upright_orientation=0.0,#1.0,
+    upright_orientation=1.0,#1.0,
     nominal_state=-1.0,
     lin_vel_z=-1.0,
     ang_vel_xy=-0.05,
@@ -61,6 +61,9 @@ FDU_PLANE_REWARDS = OrderedDict(
     collision=-1.0,
     dof_pos_limits=-1.0,
 )
+
+FDU_FLAT_REWARDS = copy.deepcopy(FDU_PLANE_REWARDS)
+FDU_FLAT_REWARDS["wheel_contact_loss"] = -1.0
 
 FDU_JUMP_REWARDS = OrderedDict(
     termination=-200.0,
@@ -532,7 +535,7 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     max_wheel_vel = 60.0
     # Persist the active action/reward/termination contract in params/env.yaml
     # for run auditing. Checkpoint compatibility remains an operator decision.
-    wyw_training_semantics_version = "fdu_flat_p0_direct_bars_fd_vel_v3_material_split"
+    wyw_training_semantics_version = "fdu_flat_p0_direct_bars_fd_vel_v4_wheel_contact_loss"
     # Fudan derives all six policy-joint velocities from wrapped encoder
     # position differences at every 500 Hz physics step. This changes the
     # checkpoint observation/control contract and must not resume v1 runs.
@@ -561,7 +564,7 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     wyw_command_curriculum_max_abs = 2.5
     clip_single_reward = 2.5
     only_positive_rewards = False
-    rewards = copy.deepcopy(FDU_PLANE_REWARDS)
+    rewards = copy.deepcopy(FDU_FLAT_REWARDS)
 
     # ------------------------------------------------------------------ #
     # 观测缩放（obs_scales）—— 按 IsaacLab / wheelbipe25_v3 风格作为 configclass 字段。
@@ -600,6 +603,7 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
     # 跳跃奖励注入开关（Flat/Rough 关闭）
     wyw_jump_enabled = False
     wyw_rough_curriculum_enabled = False
+    wyw_wheel_contact_reward_enabled = True
 
     def __post_init__(self):
         super().__post_init__()
@@ -607,6 +611,7 @@ class WheelbipeWywFlatEnvCfg(Wheelbipe25v3FlatEnvCfg):
         self.scene.num_envs = 4096
         self.commands.ranges.lin_vel_x = (-0.5, 0.5)
         self.commands.resampling_time_range = (5.0, 5.0)
+        self.rewards = copy.deepcopy(FDU_FLAT_REWARDS)
 
 
 @configclass
@@ -616,6 +621,7 @@ class WheelbipeWywRoughEnvCfg(WheelbipeWywFlatEnvCfg):
     events = FduRoughEventCfg()
     wyw_flat_command_curriculum_enabled = False
     wyw_rough_curriculum_enabled = True
+    wyw_wheel_contact_reward_enabled = False
     # A level-0 failure may narrow a wider band, but must not make the initial
     # +/-0.5 m/s command range harder.
     wyw_rough_command_min_abs = 0.5
@@ -642,6 +648,7 @@ class WheelbipeWywRoughEnvCfg(WheelbipeWywFlatEnvCfg):
         self.wheel_forward_scan_cfg["enabled"] = False
         self.terrain_command_overrides = {}
         _apply_wyw_common(self)
+        self.rewards = copy.deepcopy(FDU_PLANE_REWARDS)
         self.commands.ranges.lin_vel_x = (-0.5, 0.5)
         self.commands.resampling_time_range = (5.0, 5.0)
 
@@ -652,6 +659,7 @@ class WheelbipeWywJumpEnvCfg(WheelbipeWywFlatEnvCfg):
 
     wyw_jump_enabled = True
     wyw_flat_command_curriculum_enabled = False
+    wyw_wheel_contact_reward_enabled = False
     events = FduJumpEventCfg()
 
     # fudan jump 变体的 lin_vel obs_scale = 3.0（plane 版为 2.0）。该字段同时驱动

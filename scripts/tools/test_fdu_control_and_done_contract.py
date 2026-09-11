@@ -323,6 +323,19 @@ def test_persistent_failure_has_unclipped_terminal_penalty():
         assert required_mask in env_source
 
 
+def test_wheel_contact_loss_is_flat_only_and_uses_two_frame_filter():
+    cfg_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env_cfg.py"
+    cfg_source = cfg_path.read_text(encoding="utf-8")
+    assert 'FDU_FLAT_REWARDS["wheel_contact_loss"] = -1.0' in cfg_source
+    assert "wyw_wheel_contact_reward_enabled = True" in cfg_source
+    assert cfg_source.count("wyw_wheel_contact_reward_enabled = False") == 2
+
+    env_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env.py"
+    env_source = env_path.read_text(encoding="utf-8")
+    assert "contact_now | self._wyw_last_reward_wheel_contacts" in env_source
+    assert 'terms["wheel_contact_loss"] = compute_fdu_wheel_contact_loss' in env_source
+
+
 def test_flat_command_curriculum_starts_at_slow_speed():
     env_cfg_path = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/env_cfg.py"
     source = env_cfg_path.read_text(encoding="utf-8")

@@ -299,6 +299,40 @@ def test_jump_two_frame_contact_filter_delays_flight_by_one_frame():
     assert next_any.tolist() == [False, False, True]
 
 
+def test_wheel_contact_loss_counts_each_missing_wheel():
+    contacts = torch.tensor(
+        [[True, True], [False, True], [True, False], [False, False]]
+    )
+    loss = S.compute_fdu_wheel_contact_loss(contacts)
+    assert torch.equal(loss, torch.tensor([0.0, 1.0, 1.0, 2.0]))
+    with pytest.raises(ValueError, match="two wheel channels"):
+        S.compute_fdu_wheel_contact_loss(torch.ones(2, 3, dtype=torch.bool))
+    with pytest.raises(TypeError, match="bool dtype"):
+        S.compute_fdu_wheel_contact_loss(torch.ones(2, 2))
+
+
+def test_two_frame_filtered_wheel_contact_loss_ignores_one_frame_dropout():
+    previous = torch.tensor([[True, True], [True, False], [False, False]])
+    current = torch.tensor([[False, True], [False, False], [False, False]])
+    filtered = current | previous
+    loss = S.compute_fdu_wheel_contact_loss(filtered)
+    assert torch.equal(loss, torch.tensor([0.0, 1.0, 2.0]))
+
+
+def test_flat_wheel_contact_loss_weight_preserves_one_vs_two_wheel_ratio():
+    raw = {"wheel_contact_loss": torch.tensor([0.0, 1.0, 2.0])}
+    total, terms = S.aggregate_fdu_rewards(
+        raw,
+        OrderedDict((("wheel_contact_loss", -1.0),)),
+        step_dt=0.01,
+        clip_single_reward=2.5,
+        only_positive_rewards=False,
+    )
+    expected = torch.tensor([0.0, -0.01, -0.02])
+    assert torch.allclose(terms["wheel_contact_loss"], expected)
+    assert torch.allclose(total, expected)
+
+
 def test_reward_weight_dt_then_per_term_clip_then_sum():
     raw = {"positive": torch.tensor([100.0, 1.0]), "negative": torch.tensor([100.0, 1.0])}
     weights = OrderedDict((("positive", 2.0), ("negative", -3.0)))
