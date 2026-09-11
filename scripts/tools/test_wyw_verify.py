@@ -12,6 +12,7 @@ import pytest
 
 ROOT = Path(__file__).parents[2]
 VERIFY_PATH = ROOT / "source/agent_tasks/agent_tasks/direct/wheelbipe/wyw/verify.py"
+PLAY_VERIFY_PATH = ROOT / "scripts/rsl_rl/play_wyw_verify.py"
 
 
 def _load_verify():
@@ -26,10 +27,17 @@ def _load_verify():
 V = _load_verify()
 
 
+def test_flat_acceptance_matches_training_two_frame_wheel_contact_filter():
+    source = PLAY_VERIFY_PATH.read_text(encoding="utf-8")
+    assert "filtered_wheel_contact = wheel_contact_now | previous_wheel_contact" in source
+    assert "_flat_high_speed_metrics(raw, previous_wheel_contact)" in source
+    assert "previous_wheel_contact = (" in source
+
+
 def test_standard_scenario_counts_and_runtime_budget():
     expected = {
         ("flat", "nominal"): 17,
-        ("flat", "robust"): 3,
+        ("flat", "robust"): 4,
         ("rough", "nominal"): 35,
         ("rough", "robust"): 4,
         ("jump", "nominal"): 3,
@@ -41,7 +49,7 @@ def test_standard_scenario_counts_and_runtime_budget():
         assert len(scenarios) == count
         assert len({scenario.id for scenario in scenarios}) == count
         total_seconds += sum(scenario.settle_s + scenario.score_s for scenario in scenarios)
-    assert total_seconds == pytest.approx(298.5)
+    assert total_seconds == pytest.approx(330.0)
 
 
 def test_rough_has_no_flat_and_keeps_dense_stair_coverage():
@@ -74,6 +82,11 @@ def _summary(scenario_id: str, value: float, *, failure: str | None = None):
             "tilt_rms_deg": {"min": value, "median": value, "max": value},
             "tilt_peak_deg": {"min": value, "median": value, "max": value},
             "height_rmse_m": {"min": value, "median": value, "max": value},
+            "height_peak_to_peak_m": {"min": 0.01, "median": 0.01, "max": 0.01},
+            "vertical_velocity_rms_m_s": {"min": value, "median": value, "max": value},
+            "wheel_contact_loss_mean": {"min": 0.0, "median": 0.0, "max": 0.0},
+            "wheel_torque_saturation_rate": {"min": value, "median": value, "max": value},
+            "wheel_velocity_target_saturation_rate": {"min": value, "median": value, "max": value},
             "leg_action_delta_rms": {"min": value, "median": value, "max": value},
             "wheel_action_delta_rms": {"min": value, "median": value, "max": value},
             "leg_action_second_diff_rms": {"min": value, "median": value, "max": value},
@@ -117,7 +130,7 @@ def test_baseline_comparison_uses_deltas_and_90_percent_gate():
     current["robust"][0]["metrics"]["vx_rmse_m_s"]["median"] = 0.2
     result = V.compare_summaries(profile_summaries=current, baseline=baseline)
     assert not result["pass"]
-    assert result["profiles"]["robust"]["required"] == 3
+    assert result["profiles"]["robust"]["required"] == 4
     failed_metric = result["profiles"]["robust"]["scenarios"][0]["metrics"]["vx_rmse_m_s"]
     assert failed_metric["delta"] == pytest.approx(0.1)
     current["robust"][0]["metrics"]["vx_rmse_m_s"]["median"] = 0.1
@@ -129,6 +142,30 @@ def test_baseline_comparison_uses_deltas_and_90_percent_gate():
     result = V.compare_summaries(profile_summaries=current, baseline=baseline)
     assert not result["safety_pass"]
     assert not result["pass"]
+
+
+def test_flat_high_speed_metrics_have_absolute_stability_gates():
+    baseline = V.make_baseline_package(
+        variant="flat",
+        profile_summaries=_all_flat_summaries(0.1),
+        checkpoint="logs/baseline.pt",
+        video="baseline.mp4",
+    )
+    current = _all_flat_summaries(0.1)
+    high_speed = next(
+        item for item in current["nominal"] if item["scenario_id"] == "flat_vx_p2"
+    )
+    high_speed["metrics"]["tilt_peak_deg"]["median"] = 12.0
+    result = V.compare_summaries(profile_summaries=current, baseline=baseline)
+    tilt = next(
+        item
+        for item in result["profiles"]["nominal"]["scenarios"]
+        if item["scenario_id"] == "flat_vx_p2"
+    )["metrics"]["tilt_peak_deg"]
+    assert tilt["absolute_limit"] == 10.0
+    assert not tilt["absolute_pass"]
+    assert not tilt["pass"]
+    assert not result["high_speed_pass"]
 
 
 def test_baseline_comparison_rejects_profile_mismatch_and_missing_metrics():
@@ -199,8 +236,8 @@ def test_aggregate_uses_scenario_medians_without_expanding_robust_envs():
     aggregate = V.aggregate_comparison(profile_summaries=current, baseline=baseline)
     vx = next(metric for metric in aggregate["metrics"] if metric["name"] == "vx_rmse_m_s")
     assert aggregate["method"] == "median_of_scenario_medians"
-    assert aggregate["scenario_count"] == 20
-    assert vx["current"] == pytest.approx(10.5)
+    assert aggregate["scenario_count"] == 21
+    assert vx["current"] == pytest.approx(11.0)
     assert vx["direction"] == "lower"
     assert not vx["pass"]
     survival = next(metric for metric in aggregate["metrics"] if metric["name"] == "survival_rate")
@@ -226,7 +263,7 @@ def test_profile_and_final_report_format_validation():
         "task_id": "task",
         "seed": V.STANDARD_SEED,
         "num_envs": V.ROBUST_NUM_ENVS,
-        "simulated_duration_s": 10.5,
+        "simulated_duration_s": 28.0,
         "checkpoint": "model.pt",
         "metadata": {},
         "scenario_summaries": summaries,
@@ -242,7 +279,7 @@ def test_profile_and_final_report_format_validation():
         "profiles": ["robust"],
         "standard": True,
         "seed": V.STANDARD_SEED,
-        "simulated_duration_s": 10.5,
+        "simulated_duration_s": 28.0,
         "checkpoint": "model.pt",
         "git": {},
         "video": "flat_verify.mp4",

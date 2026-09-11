@@ -8,7 +8,7 @@ from statistics import median
 from typing import Any
 
 
-VERIFY_SCHEMA_VERSION = 3
+VERIFY_SCHEMA_VERSION = 4
 STANDARD_SEED = 42
 NOMINAL_NUM_ENVS = 1
 ROBUST_NUM_ENVS = 10
@@ -44,7 +44,8 @@ def _flat_scenarios(profile: str) -> list[VerifyScenario]:
     if profile == "robust":
         return [
             VerifyScenario("flat_robust_stand_h022", "flat", profile),
-            VerifyScenario("flat_robust_vx_p2", "flat", profile, vx=2.0),
+            VerifyScenario("flat_robust_vx_m2", "flat", profile, vx=-2.0, score_s=10.0),
+            VerifyScenario("flat_robust_vx_p2", "flat", profile, vx=2.0, score_s=10.0),
             VerifyScenario("flat_robust_yaw_p2", "flat", profile, yaw=2.0),
         ]
 
@@ -53,7 +54,13 @@ def _flat_scenarios(profile: str) -> list[VerifyScenario]:
         for height in (0.15, 0.22, 0.30)
     ]
     scenarios += [
-        VerifyScenario(f"flat_vx_{_number(vx)}", "flat", profile, vx=vx)
+        VerifyScenario(
+            f"flat_vx_{_number(vx)}",
+            "flat",
+            profile,
+            vx=vx,
+            score_s=10.0 if abs(vx) >= 2.0 else 3.0,
+        )
         for vx in (-2.0, -1.0, -0.5, 0.5, 1.0, 2.0)
     ]
     scenarios += [
@@ -353,6 +360,11 @@ LOWER_IS_BETTER = {
     "tilt_rms_deg",
     "tilt_peak_deg",
     "height_rmse_m",
+    "height_peak_to_peak_m",
+    "vertical_velocity_rms_m_s",
+    "wheel_contact_loss_mean",
+    "wheel_torque_saturation_rate",
+    "wheel_velocity_target_saturation_rate",
     "leg_action_delta_rms",
     "wheel_action_delta_rms",
     "leg_action_second_diff_rms",
@@ -374,6 +386,11 @@ METRIC_PRESENTATION = {
     "tilt_rms_deg": ("Tilt RMS", "deg"),
     "tilt_peak_deg": ("Tilt Peak", "deg"),
     "height_rmse_m": ("Height RMSE", "m"),
+    "height_peak_to_peak_m": ("Height Peak-to-Peak", "m"),
+    "vertical_velocity_rms_m_s": ("Vertical Velocity RMS", "m/s"),
+    "wheel_contact_loss_mean": ("2-Frame Filtered Missing Wheel Contacts", "wheels/step"),
+    "wheel_torque_saturation_rate": ("Wheel Torque Saturation", "%"),
+    "wheel_velocity_target_saturation_rate": ("Wheel Velocity Target Saturation", "%"),
     "leg_action_delta_rms": ("Leg Action Delta RMS", "action/step"),
     "wheel_action_delta_rms": ("Wheel Action Delta RMS", "action/step"),
     "leg_action_second_diff_rms": ("Leg Action 2nd Diff RMS", "action/step^2"),
@@ -391,6 +408,11 @@ METRIC_PRESENTATION_ORDER = (
     "tilt_rms_deg",
     "tilt_peak_deg",
     "height_rmse_m",
+    "height_peak_to_peak_m",
+    "vertical_velocity_rms_m_s",
+    "wheel_contact_loss_mean",
+    "wheel_torque_saturation_rate",
+    "wheel_velocity_target_saturation_rate",
     "leg_action_delta_rms",
     "wheel_action_delta_rms",
     "leg_action_second_diff_rms",
@@ -426,7 +448,13 @@ def required_metrics(variant: str) -> set[str]:
             "stable_landing_rate",
         }
     if variant == "flat":
-        return common
+        return common | {
+            "height_peak_to_peak_m",
+            "vertical_velocity_rms_m_s",
+            "wheel_contact_loss_mean",
+            "wheel_torque_saturation_rate",
+            "wheel_velocity_target_saturation_rate",
+        }
     raise ValueError(f"unsupported variant: {variant}")
 
 
@@ -605,6 +633,14 @@ def validate_baseline_package(baseline: dict[str, Any]) -> None:
                 raise ValueError(f"baseline missing metrics for {summary.get('scenario_id')}: {sorted(missing)}")
 
 
+def absolute_metric_limits(variant: str, scenario: VerifyScenario) -> dict[str, float]:
+    """Shared acceptance limits for evaluation and evidence presentation."""
+    if variant == "flat" and abs(scenario.vx) >= 2.0:
+        return {"tilt_peak_deg": 10.0, "height_peak_to_peak_m": 0.06,
+                "wheel_contact_loss_mean": 0.05}
+    return {}
+
+
 def compare_summaries(
     *,
     profile_summaries: dict[str, list[dict[str, Any]]],
@@ -621,7 +657,11 @@ def compare_summaries(
     }
     profile_results: dict[str, Any] = {}
     safety_pass = True
+    high_speed_pass = True
     for profile, summaries in profile_summaries.items():
+        scenario_contracts = {
+            scenario.id: scenario for scenario in build_scenarios(baseline["variant"], profile)
+        }
         passed = 0
         scenario_results = []
         for summary in summaries:
@@ -641,20 +681,32 @@ def compare_summaries(
                 raise ValueError(f"baseline missing metrics for {scenario_id}: {sorted(missing)}")
             metric_results = {}
             performance_ok = True
+            scenario_contract = scenario_contracts[scenario_id]
+            absolute_limits = absolute_metric_limits(baseline["variant"], scenario_contract)
             for name in sorted(required):
                 actual = summary.get("metrics", {}).get(name, {}).get("median")
                 baseline_value = baseline_summary["metrics"][name]["median"]
                 if name in LOWER_IS_BETTER:
-                    ok = actual is not None and actual <= float(baseline_value)
+                    baseline_ok = actual is not None and actual <= float(baseline_value)
                 elif name in HIGHER_IS_BETTER:
-                    ok = actual is not None and actual >= float(baseline_value)
+                    baseline_ok = actual is not None and actual >= float(baseline_value)
                 else:
                     raise ValueError(f"unsupported baseline metric: {name}")
+                absolute_limit = absolute_limits.get(name)
+                absolute_ok = (
+                    actual is not None
+                    and (absolute_limit is None or float(actual) <= absolute_limit)
+                )
+                if absolute_limit is not None:
+                    high_speed_pass &= absolute_ok
+                ok = baseline_ok and absolute_ok
                 performance_ok &= ok
                 metric_results[name] = {
                     "baseline": baseline_value,
                     "current": actual,
                     "delta": None if actual is None else float(actual) - float(baseline_value),
+                    "absolute_limit": absolute_limit,
+                    "absolute_pass": absolute_ok,
                     "pass": ok,
                 }
             scenario_ok = safety_ok and performance_ok
@@ -679,7 +731,8 @@ def compare_summaries(
     performance_pass = all(result["pass"] for result in profile_results.values())
     return {
         "safety_pass": safety_pass,
+        "high_speed_pass": high_speed_pass,
         "performance_pass": performance_pass,
-        "pass": safety_pass and performance_pass,
+        "pass": safety_pass and high_speed_pass and performance_pass,
         "profiles": profile_results,
     }

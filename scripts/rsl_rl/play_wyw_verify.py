@@ -583,6 +583,7 @@ from agent_tasks.direct.wheelbipe.wyw.rough_cfg import (  # noqa: E402
 from agent_tasks.direct.wheelbipe.wyw import wyw_constants as C  # noqa: E402
 from agent_tasks.direct.wheelbipe.wyw.fdu_semantics import (  # noqa: E402
     compute_fdu_action_differences,
+    compute_fdu_wheel_contact_loss,
 )
 
 
@@ -608,13 +609,22 @@ def _validate_checkpoint_metadata(checkpoint: Path, variant: str) -> dict[str, A
     agent_meta = yaml.load(agent_path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     if not isinstance(env_meta, dict) or not isinstance(agent_meta, dict):
         raise ValueError("checkpoint metadata must contain YAML mappings")
+    semantics_version = env_meta.get("wyw_training_semantics_version")
     checks = {
         "action_space": env_meta.get("action_space") == "6",
         "observation_space": env_meta.get("observation_space") == "25",
         "state_space": env_meta.get("state_space") == "141",
         "history_frames": env_meta.get("num_obs_hist") == "5",
-        "semantics_version": env_meta.get("wyw_training_semantics_version")
-        == "fdu_flat_p0_direct_bars_fd_vel_v3_material_split",
+        # v2 is the diffvel/no-upreward checkpoint contract; v3 adds the
+        # material split and v4 adds the Flat wheel-contact reward. All retain
+        # the same observation, action, finite-difference velocity, and timing
+        # contract required by the verifier.
+        "semantics_version": semantics_version
+        in {
+            "fdu_flat_p0_direct_bars_fd_vel_v2",
+            "fdu_flat_p0_direct_bars_fd_vel_v3_material_split",
+            "fdu_flat_p0_direct_bars_fd_vel_v4_wheel_contact_loss",
+        },
         "joint_velocity_source": env_meta.get("wyw_joint_velocity_source")
         == "wrapped_position_difference",
         "joint_velocity_diff_dt": math.isclose(
@@ -629,7 +639,12 @@ def _validate_checkpoint_metadata(checkpoint: Path, variant: str) -> dict[str, A
     failed = [name for name, ok in checks.items() if not ok]
     if failed:
         raise ValueError(f"checkpoint metadata contract mismatch: {', '.join(failed)}")
-    return {"env_yaml": str(env_path), "agent_yaml": str(agent_path), "checks": checks}
+    return {
+        "env_yaml": str(env_path),
+        "agent_yaml": str(agent_path),
+        "semantics_version": semantics_version,
+        "checks": checks,
+    }
 
 
 def _configure_env(variant: str, profile: str):
@@ -845,7 +860,24 @@ def _state_metrics(raw, variant: str, scenario) -> dict[str, torch.Tensor]:
         "tilt": tilt,
         "height": height,
         "root_z": raw.robot.data.root_pos_w[:, 2],
+        "vertical_velocity": raw.robot.data.root_lin_vel_w[:, 2],
     }
+
+
+def _flat_high_speed_metrics(
+    raw, previous_wheel_contact: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    contact_forces = raw.contact_sensor.data.net_forces_w[:, raw._desired_contact_link_idx, 2]
+    wheel_contact_now = contact_forces > float(raw.cfg.wyw_flight_contact_force)
+    # Match the training reward: ignore an isolated one-frame contact miss.
+    filtered_wheel_contact = wheel_contact_now | previous_wheel_contact
+    contact_loss = compute_fdu_wheel_contact_loss(filtered_wheel_contact)
+    wheel_torque = raw.robot.data.applied_torque[:, raw._wyw_wheel_joint_idx]
+    torque_limit = raw.robot.data.joint_effort_limits[:, raw._wyw_wheel_joint_idx]
+    torque_saturation = (wheel_torque.abs() >= 0.99 * torque_limit).to(dtype=torch.float).mean(dim=-1)
+    wheel_target = raw._actions[:, C.WYW_WHEEL_ACTION_IDS] * raw.wheel_action_scale
+    target_saturation = (wheel_target.abs() >= 0.99 * raw.max_wheel_vel).to(dtype=torch.float).mean(dim=-1)
+    return contact_loss, torque_saturation, target_saturation, wheel_contact_now
 
 
 def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -926,6 +958,10 @@ def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[d
         "yaw": torch.zeros(num_envs, device=raw.device),
         "tilt": torch.zeros(num_envs, device=raw.device),
         "height": torch.zeros(num_envs, device=raw.device),
+        "vertical_velocity": torch.zeros(num_envs, device=raw.device),
+        "wheel_contact_loss": torch.zeros(num_envs, device=raw.device),
+        "wheel_torque_saturation": torch.zeros(num_envs, device=raw.device),
+        "wheel_velocity_target_saturation": torch.zeros(num_envs, device=raw.device),
         "leg_action_delta": torch.zeros(num_envs, device=raw.device),
         "wheel_action_delta": torch.zeros(num_envs, device=raw.device),
         "leg_action_second_diff": torch.zeros(num_envs, device=raw.device),
@@ -941,6 +977,8 @@ def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[d
     previous_score_actions = torch.zeros(num_envs, C.WYW_ACTION_DIM, device=raw.device)
     before_previous_score_actions = torch.zeros_like(previous_score_actions)
     tilt_peak = torch.zeros(num_envs, device=raw.device)
+    height_min = torch.full((num_envs,), torch.inf, device=raw.device)
+    height_max = torch.full((num_envs,), -torch.inf, device=raw.device)
     counts = torch.zeros(num_envs, device=raw.device)
     completed = torch.zeros(num_envs, dtype=torch.bool, device=raw.device)
 
@@ -961,6 +999,14 @@ def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[d
     airtimes: list[list[float]] = [[] for _ in range(num_envs)]
     landed = torch.zeros(num_envs, dtype=torch.long, device=raw.device)
     stable_landed = torch.zeros_like(landed)
+    previous_wheel_contact = None
+    if scenario.variant == "flat":
+        initial_forces = raw.contact_sensor.data.net_forces_w[
+            :, raw._desired_contact_link_idx, 2
+        ]
+        previous_wheel_contact = (
+            initial_forces > float(raw.cfg.wyw_flight_contact_force)
+        )
 
     score_steps = int(round(scenario.score_s / raw.step_dt))
     for step in range(score_steps):
@@ -970,6 +1016,21 @@ def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[d
         sums["yaw"][scoring] += torch.square(state["yaw"][scoring] - scenario.yaw)
         sums["tilt"][scoring] += torch.square(state["tilt"][scoring])
         sums["height"][scoring] += torch.square(state["height"][scoring] - scenario.height)
+        sums["vertical_velocity"][scoring] += torch.square(state["vertical_velocity"][scoring])
+        height_min[scoring] = torch.minimum(height_min[scoring], state["height"][scoring])
+        height_max[scoring] = torch.maximum(height_max[scoring], state["height"][scoring])
+        if scenario.variant == "flat":
+            (
+                wheel_contact_loss,
+                wheel_torque_saturation,
+                wheel_target_saturation,
+                previous_wheel_contact,
+            ) = (
+                _flat_high_speed_metrics(raw, previous_wheel_contact)
+            )
+            sums["wheel_contact_loss"][scoring] += wheel_contact_loss[scoring]
+            sums["wheel_torque_saturation"][scoring] += wheel_torque_saturation[scoring]
+            sums["wheel_velocity_target_saturation"][scoring] += wheel_target_saturation[scoring]
         tilt_peak[scoring] = torch.maximum(tilt_peak[scoring], state["tilt"][scoring])
         counts[scoring] += 1
 
@@ -1056,6 +1117,26 @@ def _run_scenario(env, gym_env, raw, policy, recorder, scenario) -> tuple[list[d
                     "height_rmse_m": math.sqrt(float(sums["height"][index].item()) / count),
                 }
             )
+            if scenario.variant == "flat":
+                sample.update(
+                    {
+                        "height_peak_to_peak_m": float(
+                            (height_max[index] - height_min[index]).item()
+                        ),
+                        "vertical_velocity_rms_m_s": math.sqrt(
+                            float(sums["vertical_velocity"][index].item()) / count
+                        ),
+                        "wheel_contact_loss_mean": float(
+                            sums["wheel_contact_loss"][index].item() / count
+                        ),
+                        "wheel_torque_saturation_rate": float(
+                            sums["wheel_torque_saturation"][index].item() / count
+                        ),
+                        "wheel_velocity_target_saturation_rate": float(
+                            sums["wheel_velocity_target_saturation"][index].item() / count
+                        ),
+                    }
+                )
         delta_count = float(action_counts["delta"][index].item())
         if delta_count > 0:
             sample.update(
