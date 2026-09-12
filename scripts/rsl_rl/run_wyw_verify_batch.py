@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
-from datetime import datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -45,8 +43,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--output-name", default="evaluate",
                         help="Folder below acceptance/<variant> for each result")
-    parser.add_argument("--summary-root", type=Path, default=None,
-                        help="Batch summary root (default: <logs-root>/batch_verification)")
     parser.add_argument("--show-window", action="store_true", help="Do not pass --headless")
     parser.add_argument("--skip-existing", action="store_true",
                         help="Reuse a complete report for the exact checkpoint")
@@ -213,17 +209,6 @@ def _run_command(command: list[str], log_path: Path) -> int:
         return process.wait()
 
 
-def _write_summary(path: Path, payload: dict[str, Any]) -> None:
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    csv_path = path.with_suffix(".csv")
-    fields = ("run", "checkpoint", "status", "source", "returncode", "duration_s",
-              "output_dir", "log", "error")
-    with csv_path.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows({key: row.get(key) for key in fields} for row in payload["results"])
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -276,37 +261,14 @@ def main(argv: list[str] | None = None) -> int:
             print(shlex.join(_command(args, checkpoint, output_dir)))
         return 0
 
-    batch_stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    selector = checkpoint_name.removesuffix(".pt")
-    summary_root = (args.summary_root or logs_root / "batch_verification").resolve()
-    batch_dir = summary_root / f"{batch_stamp}_{args.variant}_{selector}"
-    batch_dir.mkdir(parents=True, exist_ok=False)
-    summary_path = batch_dir / "summary.json"
-    payload: dict[str, Any] = {
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "variant": args.variant,
-        "selection": checkpoint_name,
-        "logs_root": str(logs_root),
-        "skipped_runs": skipped,
-        "results": [],
-    }
+    statuses: list[str] = []
 
     for index, checkpoint in enumerate(checkpoints, start=1):
         output_dir = _output_dir(checkpoint, args.variant, args.output_name)
         existing = _existing_status(output_dir, checkpoint) if args.skip_existing else None
         if existing is not None:
             print(f"[WYW Batch] [{index}/{len(checkpoints)}] {existing} existing {checkpoint}")
-            payload["results"].append({
-                "run": checkpoint.parent.name,
-                "checkpoint": str(checkpoint),
-                "status": existing,
-                "source": "existing",
-                "returncode": 0 if existing == "PASS" else 1,
-                "duration_s": 0.0,
-                "output_dir": str(output_dir),
-                "log": None,
-            })
-            _write_summary(summary_path, payload)
+            statuses.append(existing)
             continue
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -345,32 +307,13 @@ def main(argv: list[str] | None = None) -> int:
             status = "ERROR"
         print(f"[WYW Batch] [{index}/{len(checkpoints)}] {status} "
               f"rc={returncode} duration={duration:.1f}s")
-        payload["results"].append({
-            "run": checkpoint.parent.name,
-            "checkpoint": str(checkpoint),
-            "status": status,
-            "source": "executed",
-            "returncode": returncode,
-            "error": execution_error,
-            "duration_s": round(duration, 3),
-            "output_dir": str(output_dir),
-            "log": str(log_path),
-        })
-        _write_summary(summary_path, payload)
+        statuses.append(status)
         if status == "ERROR" and args.fail_fast:
             break
 
-    results = payload["results"]
-    payload["finished_at"] = datetime.now(timezone.utc).isoformat()
-    payload["counts"] = {
-        status: sum(row["status"] == status for row in results)
-        for status in ("PASS", "FAIL", "ERROR")
-    }
-    _write_summary(summary_path, payload)
-    print(f"[WYW Batch] summary: {summary_path}")
-    if payload["counts"]["ERROR"]:
+    if "ERROR" in statuses:
         return 2
-    if payload["counts"]["FAIL"]:
+    if "FAIL" in statuses:
         return 1
     return 0
 
