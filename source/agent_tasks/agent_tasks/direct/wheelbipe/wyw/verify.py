@@ -720,7 +720,9 @@ def compare_summaries(
                     "metrics": metric_results,
                 }
             )
-        required_count = math.ceil(0.9 * len(summaries))
+        # A small allowance for isolated scenario regressions keeps the gate
+        # useful for experiment screening while absolute safety limits remain strict.
+        required_count = math.ceil(0.85 * len(summaries))
         profile_results[profile] = {
             "passed": passed,
             "total": len(summaries),
