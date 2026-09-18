@@ -48,11 +48,17 @@ bash scripts/cloud/fdu_flat_train_pipeline.sh start \
 
 The pipeline records these artifacts under `logs/cloud/`:
 
-- `<run>.train.log`, `<run>.train.pid`: training output and PID.
+- `<run>.train.log`, `<run>.train.pid`, `<run>.train.exit`: training output, PID, and final exit code.
 - `<run>.post_play.log`: watcher output and checkpoint selection.
 - `<run>.play_runtime.log`: play output.
 - `<run>.play_video.txt`: absolute path of the retained MP4.
 - `<run>.play.complete`: acceptance completed successfully.
+
+The pipeline rejects a second active launch with the same run name. When a new
+launch reuses a completed run name, stale acceptance markers are removed before
+training starts. Post-training Play only runs after `<run>.train.exit` records a
+zero exit code; a failed or interrupted training process is never accepted by
+falling back to an older checkpoint.
 
 The model directory is under
 `logs/rsl_rl/wheelbipe_fdu_wyw_flat_direct/<timestamp>_<run-name>/`; the final

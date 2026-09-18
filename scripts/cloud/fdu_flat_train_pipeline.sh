@@ -21,6 +21,7 @@ DEFAULT_STEPS_PER_ITERATION=48
 DEFAULT_CHECKPOINT_VIDEO_LENGTH=200
 DEFAULT_FINAL_VIDEO_LENGTH=1000
 GPU_IDLE_MEMORY_TOLERANCE_MIB=64
+RUN_LOCK_FD=""
 
 usage() {
     cat <<'EOF'
@@ -56,6 +57,7 @@ watch options:
   --gpu ID                 Physical GPU exposed through CUDA_VISIBLE_DEVICES
   --skip-gpu-check         Run final Play without waiting for the GPU to become free
   --train-pid PID          Training process to wait for
+  --train-status-file PATH File written atomically with the training exit code
   --play-task TASK         Play task id
   --run-name NAME          Log directory suffix
   --video-length N         Final Play steps to record (default: 1000)
@@ -237,6 +239,59 @@ latest_checkpoint() {
         | sort -V | tail -1
 }
 
+acquire_run_lock() {
+    local lock_file="$1"
+    command -v flock >/dev/null 2>&1 || die "flock is required to protect run artifacts"
+    exec {RUN_LOCK_FD}> "$lock_file"
+    flock -n "$RUN_LOCK_FD" || die "another pipeline with this run name is still active: $lock_file"
+    export FDU_PIPELINE_LOCK_FD="$RUN_LOCK_FD"
+}
+
+adopt_or_acquire_run_lock() {
+    local lock_file="$1"
+    local inherited_fd="${FDU_PIPELINE_LOCK_FD:-}"
+    if [[ "$inherited_fd" =~ ^[0-9]+$ && -e "/proc/$$/fd/$inherited_fd" ]]; then
+        flock -n "$inherited_fd" || die "inherited run lock is not held: $lock_file"
+        RUN_LOCK_FD="$inherited_fd"
+        return 0
+    fi
+    acquire_run_lock "$lock_file"
+}
+
+train_worker() {
+    local status_file=""
+    [[ "${1:-}" == "--status-file" ]] || die "train-worker requires --status-file PATH"
+    status_file="${2:-}"
+    [[ -n "$status_file" ]] || die "train-worker requires --status-file PATH"
+    shift 2
+    [[ "${1:-}" == "--" ]] || die "train-worker requires -- before the training command"
+    shift
+    [[ $# -gt 0 ]] || die "train-worker requires a training command"
+
+    local child_pid=""
+    forward_termination() {
+        [[ -z "$child_pid" ]] || kill -TERM "$child_pid" 2>/dev/null || true
+    }
+    trap forward_termination TERM INT
+
+    set +e
+    "$@" &
+    child_pid=$!
+    wait "$child_pid"
+    local status=$?
+    if kill -0 "$child_pid" 2>/dev/null; then
+        wait "$child_pid"
+        status=$?
+    fi
+    set -e
+    trap - TERM INT
+
+    local status_tmp="${status_file}.tmp.$$"
+    printf '%s\n' "$status" > "$status_tmp"
+    mv -f -- "$status_tmp" "$status_file"
+    return "$status"
+}
+
 watch_pipeline() {
     local repo="$1"
     local data_root="$2"
@@ -244,21 +299,28 @@ watch_pipeline() {
     local gpu="$4"
     local check_gpu="$5"
     local train_pid="$6"
-    local play_task="$7"
-    local run_name="$8"
-    local video_length="$9"
+    local train_status_file="$7"
+    local play_task="$8"
+    local run_name="$9"
+    local video_length="${10}"
     local experiment_name
     experiment_name="$(experiment_name_for_task "$play_task")"
     local run_root="$data_root/logs/rsl_rl/$experiment_name"
     local artifact_prefix="$data_root/logs/cloud/${run_name}"
     local play_runtime_log="${artifact_prefix}.play_runtime.log"
 
-    log "waiting for training pid=${train_pid}"
-    while kill -0 "$train_pid" 2>/dev/null; do
-        sleep 60
+    log "waiting for training pid=${train_pid} status_file=${train_status_file}"
+    while [[ ! -s "$train_status_file" ]]; do
+        kill -0 "$train_pid" 2>/dev/null \
+            || die "training pid=${train_pid} exited without writing status: $train_status_file"
+        sleep 5
     done
-    log "training pid=${train_pid} exited"
-    sleep 10
+
+    local train_status
+    read -r train_status < "$train_status_file"
+    [[ "$train_status" =~ ^[0-9]+$ ]] || die "invalid training exit status in $train_status_file: $train_status"
+    log "training pid=${train_pid} exit=${train_status}"
+    [[ "$train_status" -eq 0 ]] || die "training failed with exit status ${train_status}; refusing post-training play"
 
     local run_dir
     run_dir="$(latest_run_dir "$run_root" "$run_name")"
@@ -375,10 +437,19 @@ start_pipeline() {
             log "GPU safety check passed: physical GPU ${gpu} is idle"
         fi
     fi
-    mkdir -p "$data_root/logs/cloud" "$data_root/logs/rsl_rl"
 
-    local train_log="$data_root/logs/cloud/${run_name}.train.log"
-    local watch_log="$data_root/logs/cloud/${run_name}.post_play.log"
+    mkdir -p "$data_root/logs/cloud" "$data_root/logs/rsl_rl"
+    local artifact_prefix="$data_root/logs/cloud/${run_name}"
+    acquire_run_lock "${artifact_prefix}.lock"
+
+    local train_log="${artifact_prefix}.train.log"
+    local watch_log="${artifact_prefix}.post_play.log"
+    local train_status_file="${artifact_prefix}.train.exit"
+    rm -f -- \
+        "$train_status_file" \
+        "${artifact_prefix}.play.complete" \
+        "${artifact_prefix}.play_video.txt" \
+        "${artifact_prefix}.play_runtime.log"
     local checkpoint_args=()
     if [[ -n "$checkpoint" ]]; then
         checkpoint_args+=(--checkpoint "$checkpoint")
@@ -391,7 +462,8 @@ start_pipeline() {
     fi
     log "starting profile=${profile} task=${task} gpu=${gpu} envs=${num_envs} iterations=${max_iterations} seed=${seed}"
     log "data_root=${data_root} checkpoint_interval=${checkpoint_interval} video_interval=${checkpoint_video_interval}"
-    nohup env CUDA_VISIBLE_DEVICES="$gpu" PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}" OMNI_KIT_ACCEPT_EULA=YES \
+    nohup "$SCRIPT_PATH" train-worker --status-file "$train_status_file" -- \
+        env CUDA_VISIBLE_DEVICES="$gpu" PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}" OMNI_KIT_ACCEPT_EULA=YES \
         "$python" -u "$repo/scripts/rsl_rl/train.py" \
         --task="$task" \
         --num_envs="$num_envs" \
@@ -419,6 +491,7 @@ start_pipeline() {
         --python "$python"
         --gpu "$gpu"
         --train-pid "$train_pid"
+        --train-status-file "$train_status_file"
         --play-task "$play_task"
         --run-name "$run_name"
         --video-length "$DEFAULT_FINAL_VIDEO_LENGTH"
@@ -439,6 +512,7 @@ watch_command() {
     local gpu=""
     local check_gpu=1
     local train_pid=""
+    local train_status_file=""
     local play_task="$DEFAULT_PLAY_TASK"
     local run_name="flat_500hz_height015_030_4096_iter5000"
     local video_length="$DEFAULT_FINAL_VIDEO_LENGTH"
@@ -452,6 +526,7 @@ watch_command() {
             --gpu) gpu="$2"; shift 2 ;;
             --skip-gpu-check) check_gpu=0; shift ;;
             --train-pid) train_pid="$2"; shift 2 ;;
+            --train-status-file) train_status_file="$2"; shift 2 ;;
             --play-task) play_task="$2"; shift 2 ;;
             --run-name) run_name="$2"; shift 2 ;;
             --video-length) video_length="$2"; shift 2 ;;
@@ -467,7 +542,11 @@ watch_command() {
     gpu="${gpu:-$PROFILE_GPU}"
     gpu="$(resolve_gpu "$gpu")"
     [[ -n "$train_pid" ]] || die "--train-pid is required for watch"
-    watch_pipeline "$repo" "$data_root" "$python" "$gpu" "$check_gpu" "$train_pid" "$play_task" "$run_name" "$video_length"
+    [[ -n "$train_status_file" ]] || die "--train-status-file is required for watch"
+    [[ "$run_name" =~ ^[A-Za-z0-9._-]+$ ]] || die "run name may contain only letters, digits, dot, underscore, and hyphen"
+    mkdir -p "$data_root/logs/cloud"
+    adopt_or_acquire_run_lock "$data_root/logs/cloud/${run_name}.lock"
+    watch_pipeline "$repo" "$data_root" "$python" "$gpu" "$check_gpu" "$train_pid" "$train_status_file" "$play_task" "$run_name" "$video_length"
 }
 
 command="${1:-}"
@@ -475,6 +554,7 @@ shift || true
 case "$command" in
     start) start_pipeline "$@" ;;
     watch) watch_command "$@" ;;
+    train-worker) train_worker "$@" ;;
     -h|--help|"") usage ;;
     *) die "expected start or watch (got: ${command})" ;;
 esac

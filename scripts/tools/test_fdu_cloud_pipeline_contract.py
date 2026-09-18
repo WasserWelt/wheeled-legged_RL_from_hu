@@ -154,6 +154,99 @@ def test_pipeline_forwards_optional_checkpoint_training_modes():
     assert '--resume-training requires --checkpoint PATH' in source
 
 
+def test_pipeline_records_training_exit_and_rejects_failed_training():
+    source = PIPELINE.read_text(encoding="utf-8")
+    assert 'train-worker --status-file "$train_status_file" --' in source
+    assert 'mv -f -- "$status_tmp" "$status_file"' in source
+    assert '[[ "$train_status" -eq 0 ]] || die "training failed with exit status' in source
+    assert '--train-status-file "$train_status_file"' in source
+
+
+def test_train_worker_writes_success_and_failure_status_atomically(tmp_path):
+    for expected_status in (0, 7):
+        status_file = tmp_path / f"train-{expected_status}.exit"
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                str(PIPELINE),
+                "train-worker",
+                "--status-file",
+                str(status_file),
+                "--",
+                "/bin/bash",
+                "-c",
+                f"exit {expected_status}",
+            ],
+            check=False,
+        )
+        assert result.returncode == expected_status
+        assert status_file.read_text(encoding="utf-8") == f"{expected_status}\n"
+        assert not list(tmp_path.glob(f"train-{expected_status}.exit.tmp.*"))
+
+
+def test_watcher_rejects_failed_training_before_play(tmp_path):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_nvidia_smi = bin_dir / "nvidia-smi"
+    fake_nvidia_smi.write_text(
+        """#!/usr/bin/env bash
+case "$*" in
+  *--query-gpu=index*) printf '%s\\n' 0 ;;
+  *--id=0*) ;;
+  *) exit 2 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    fake_nvidia_smi.chmod(0o755)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    data_root = tmp_path / "data"
+    status_file = tmp_path / "train.exit"
+    status_file.write_text("7\n", encoding="utf-8")
+    result = subprocess.run(
+        [
+            "/bin/bash",
+            str(PIPELINE),
+            "watch",
+            "--repo",
+            str(repo),
+            "--data-root",
+            str(data_root),
+            "--python",
+            "/bin/true",
+            "--gpu",
+            "0",
+            "--skip-gpu-check",
+            "--train-pid",
+            str(os.getpid()),
+            "--train-status-file",
+            str(status_file),
+            "--run-name",
+            "failed-run",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode != 0
+    assert "training failed with exit status 7; refusing post-training play" in result.stderr
+    assert not (data_root / "logs/cloud/failed-run.play_runtime.log").exists()
+
+
+def test_pipeline_locks_run_name_and_clears_stale_acceptance_artifacts():
+    source = PIPELINE.read_text(encoding="utf-8")
+    assert 'flock -n "$RUN_LOCK_FD"' in source
+    assert 'acquire_run_lock "${artifact_prefix}.lock"' in source
+    assert 'adopt_or_acquire_run_lock "$data_root/logs/cloud/${run_name}.lock"' in source
+    assert 'export FDU_PIPELINE_LOCK_FD="$RUN_LOCK_FD"' in source
+    assert '"${artifact_prefix}.play.complete"' in source
+    assert '"${artifact_prefix}.play_video.txt"' in source
+
+
 def test_resume_training_without_checkpoint_is_rejected_before_gpu_access(tmp_path):
     result = subprocess.run(
         [

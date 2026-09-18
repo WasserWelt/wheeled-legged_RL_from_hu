@@ -126,3 +126,5 @@ tail -f "$DATA/logs/cloud/$RUN.train.log"
 ```
 
 训练和 watcher 都通过 `nohup` 运行，SSH 断开不会终止任务。训练开始前会检查 GPU；训练完成后如果该卡已被别人占用，watcher 会等待 GPU 再执行最终 Play。
+
+同一时间不能启动两个相同 `run-name` 的流水线。重复使用一个已经结束的名称时，脚本会先清理旧的 Play 完成标记。训练退出码记录在 `logs/cloud/<run>.train.exit`；只有退出码为 0 时 watcher 才会执行最终 Play，训练异常退出不会回退到旧 checkpoint。
