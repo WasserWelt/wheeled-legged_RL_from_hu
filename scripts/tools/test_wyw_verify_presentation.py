@@ -67,9 +67,57 @@ def test_charts_and_robust_samples(tmp_path):
                             {"scenario_id": "test", "vx_rmse_m_s": .3}]}]
     paths = P.write_charts(tmp_path, variant="flat", status="FAIL", comparison=comparison,
                            reports=reports, baseline={})
-    assert len(paths) == 4
+    assert len(paths) == 1
     assert all(path.stat().st_size > 1000 for path in paths)
-    assert (tmp_path / "charts.md").is_file()
+    assert not (tmp_path / "charts.md").exists()
+    assert list(tmp_path.glob("*.png")) == [tmp_path / "comparison.png"]
+
+
+def test_plot_inputs_require_complete_sample_metrics(tmp_path, monkeypatch):
+    checkpoint = tmp_path / "model_10.pt"
+    checkpoint.touch()
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(json.dumps({"variant": "flat", "checkpoint": "base"}),
+                             encoding="utf-8")
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps({
+        "mode": "evaluate",
+        "variant": "flat",
+        "checkpoint": str(checkpoint),
+        "baseline": {"package": str(baseline_path), "checkpoint": "base"},
+        "runs": [{"profile": "nominal", "samples": [{"metric_a": 1.0}]}],
+    }), encoding="utf-8")
+    monkeypatch.setattr(P.V, "validate_final_report", lambda report: None)
+    monkeypatch.setattr(P.V, "validate_baseline_package", lambda baseline: None)
+    monkeypatch.setattr(P.V, "required_metrics", lambda variant: {"metric_a", "metric_b"})
+    monkeypatch.setattr(P, "_validate_plot_comparison", lambda report: None)
+
+    with pytest.raises(ValueError, match="missing plotting metrics.*metric_b"):
+        P.load_plot_inputs(report_path, expected_checkpoint=checkpoint,
+                           expected_variant="flat")
+
+
+def test_plot_comparison_requires_every_scenario_metric(monkeypatch):
+    scenario = type("Scenario", (), {"id": "flat_nominal_test"})()
+    monkeypatch.setattr(P.V, "build_scenarios", lambda variant, profile: [scenario])
+    monkeypatch.setattr(P.V, "required_metrics", lambda variant: {"metric_a", "metric_b"})
+    profile = {
+        "passed": 1,
+        "total": 1,
+        "scenarios": [{
+            "scenario_id": scenario.id,
+            "metrics": {
+                "metric_a": {"baseline": 1.0, "current": 1.0, "delta": 0.0, "pass": True}
+            },
+        }],
+    }
+    report = {
+        "variant": "flat",
+        "evaluation": {"profiles": {"nominal": profile, "robust": profile}},
+    }
+
+    with pytest.raises(ValueError, match="missing metrics.*metric_b"):
+        P._validate_plot_comparison(report)
 
 
 @pytest.mark.parametrize("legacy", [False, True])

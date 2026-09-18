@@ -114,15 +114,11 @@ python scripts/rsl_rl/play_wyw_verify.py \
 ```
 
 Evaluation writes `report.json`, `results.csv`, `comparison.mp4`,
-`comparison.png`, `current.mp4`, `trace.json`, grouped metric sheets, and a
-`charts.md` index. Start with `comparison.png` for the acceptance result,
-profile pass counts, failure events, and the largest failed metric checks. The
-grouped tracking, stability, smoothness, actuator, and outcome sheets show one
-physical unit per axis, with gray baseline points and blue/red current points.
-`robust_distributions.png` shows the individual current environments and the
-baseline range for four task-relevant metrics. Robust environments are still
-summarized within their scenario for acceptance and are never treated as ten
-independent scenarios.
+`comparison.png`, `current.mp4`, and `trace.json`. Start with the single
+`comparison.png`: it contains profile pass counts, all acceptance gates, failure
+events, and the largest failed metric checks in a large readable layout. Robust
+environments are summarized within their scenario for acceptance and are never
+treated as ten independent scenarios.
 
 The comparison video is 1920x1080: baseline is on the left, current is on the
 right, and synchronized forward-speed, yaw-rate, height, and tilt plots occupy
@@ -131,7 +127,7 @@ composer validates scenario, phase, command, duration, and frame coverage when
 both traces are available; failed env 0 frames are frozen and labelled so an
 automatic reset cannot look like recovery. Each side contains nominal followed
 by robust. Hashes are not used. Structural metadata, scenario IDs/order, metric
-completeness, safety, and the nominal/robust 90% gates remain validated.
+completeness, safety, and the nominal/robust 85% gates remain validated.
 In addition to tracking, attitude, survival, and task outcomes, schema v4
 records normalized policy-action smoothness separately for the four leg actions
 and two wheel actions. It reports RMS first differences (action change per
@@ -171,7 +167,19 @@ the numerically highest `model_N.pt` in each run. `--run-glob` limits the run
 directories and `--skip-existing` reuses complete reports for the exact
 checkpoint. Extra `play_wyw_verify.py` arguments go after `--`. Runs execute
 sequentially and continue after policy failures or execution errors by default.
-Each evaluation keeps `batch_driver.log`; timestamped JSON and CSV summaries are
-written below `logs/rsl_rl/batch_verification/`. Exit status is 0 when all
+Each evaluation keeps its own `batch_driver.log`. Exit status is 0 when all
 policies pass, 1 when at least one policy fails acceptance, and 2 for execution
 errors or an empty selection.
+
+Use `--plot-only` with the same checkpoint selection to regenerate each
+`comparison.png` without launching Isaac Sim or sampling again:
+
+```bash
+python scripts/rsl_rl/run_wyw_verify_batch.py \
+  --variant flat --iteration 4999 --plot-only
+```
+
+Before drawing any checkpoint, this mode validates that every selected output
+contains a complete standard `report.json`, all nominal/robust samples and
+metrics, and the referenced baseline package. If any input is missing or
+incompatible, it reports all affected checkpoints and redraws nothing.

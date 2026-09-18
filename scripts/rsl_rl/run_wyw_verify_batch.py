@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -17,6 +18,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 VERIFY_SCRIPT = REPO_ROOT / "scripts/rsl_rl/play_wyw_verify.py"
+PRESENTATION_SCRIPT = REPO_ROOT / "scripts/rsl_rl/wyw_verify_presentation.py"
 EXPECTED_EXPERIMENTS = {
     "flat": "wheelbipe_fdu_wyw_flat_direct",
     "rough": "wheelbipe_fdu_wyw_rough_direct",
@@ -26,6 +28,19 @@ RESERVED_VERIFY_ARGS = {
     "--variant", "--checkpoint", "--mode", "--profile", "--baseline-config",
     "--output-dir", "--device", "--headless",
 }
+
+
+def _load_presentation():
+    spec = importlib.util.spec_from_file_location("_wyw_verify_presentation", PRESENTATION_SCRIPT)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load presentation module: {PRESENTATION_SCRIPT}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+P = _load_presentation()
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -46,6 +61,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--show-window", action="store_true", help="Do not pass --headless")
     parser.add_argument("--skip-existing", action="store_true",
                         help="Reuse a complete report for the exact checkpoint")
+    parser.add_argument(
+        "--plot-only",
+        action="store_true",
+        help="Redraw charts from complete existing reports without sampling or launching Isaac Sim",
+    )
     parser.add_argument("--fail-fast", action="store_true", help="Stop after the first execution error")
     parser.add_argument("--dry-run", action="store_true", help="List commands without running Isaac Sim")
     parser.add_argument(
@@ -190,6 +210,17 @@ def _command(args: argparse.Namespace, checkpoint: Path, output_dir: Path) -> li
     return [*command, *extras]
 
 
+def _plot_command(
+    args: argparse.Namespace, report_path: Path, baseline_path: Path
+) -> list[str]:
+    return [
+        str(args.python),
+        str(PRESENTATION_SCRIPT),
+        "--report", str(report_path),
+        "--baseline", str(baseline_path),
+    ]
+
+
 def _run_command(command: list[str], log_path: Path) -> int:
     with log_path.open("w", encoding="utf-8") as stream:
         stream.write(f"command: {shlex.join(command)}\n\n")
@@ -218,21 +249,26 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(f"logs root does not exist: {logs_root}")
         if not args.python.is_file():
             raise ValueError(f"Python executable does not exist: {args.python}")
-        baseline_config = args.baseline_config.resolve()
-        if not baseline_config.is_file():
-            raise ValueError(f"baseline config does not exist: {baseline_config}")
-        try:
-            baseline_settings = json.loads(baseline_config.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"cannot read baseline config: {baseline_config}") from exc
-        if baseline_settings.get("variant") != args.variant:
-            raise ValueError(
-                f"baseline config variant is {baseline_settings.get('variant')!r}, "
-                f"expected {args.variant!r}"
-            )
-        baseline_has_trace = _validate_baseline_artifacts(baseline_settings, args.variant)
         _output_dir(logs_root / "placeholder.pt", args.variant, args.output_name)
-        _command(args, logs_root / "placeholder.pt", logs_root / "placeholder-output")
+        if args.plot_only:
+            if args.verify_args:
+                raise ValueError("extra play_wyw_verify.py arguments cannot be used with --plot-only")
+            baseline_has_trace = True
+        else:
+            baseline_config = args.baseline_config.resolve()
+            if not baseline_config.is_file():
+                raise ValueError(f"baseline config does not exist: {baseline_config}")
+            try:
+                baseline_settings = json.loads(baseline_config.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise ValueError(f"cannot read baseline config: {baseline_config}") from exc
+            if baseline_settings.get("variant") != args.variant:
+                raise ValueError(
+                    f"baseline config variant is {baseline_settings.get('variant')!r}, "
+                    f"expected {args.variant!r}"
+                )
+            baseline_has_trace = _validate_baseline_artifacts(baseline_settings, args.variant)
+            _command(args, logs_root / "placeholder.pt", logs_root / "placeholder-output")
         checkpoints, skipped = discover_checkpoints(
             logs_root,
             run_glob=args.run_glob,
@@ -254,17 +290,68 @@ def main(argv: list[str] | None = None) -> int:
         print("[WYW Batch] ERROR: no matching checkpoints", file=sys.stderr)
         return 2
 
+    plot_jobs: dict[Path, tuple[str, Path, Path]] = {}
+    if args.plot_only:
+        errors = []
+        for checkpoint in checkpoints:
+            output_dir = _output_dir(checkpoint, args.variant, args.output_name)
+            report_path = output_dir / "report.json"
+            try:
+                report, _, baseline_path = P.load_plot_inputs(
+                    report_path,
+                    expected_checkpoint=checkpoint,
+                    expected_variant=args.variant,
+                )
+                plot_jobs[checkpoint] = (report["status"], report_path, baseline_path)
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                errors.append((checkpoint, str(exc)))
+        if errors:
+            print(
+                "[WYW Batch] ERROR: --plot-only requires complete sampled data for every "
+                "selected checkpoint; nothing was redrawn",
+                file=sys.stderr,
+            )
+            for checkpoint, detail in errors:
+                print(f"[WYW Batch] ERROR {checkpoint}: {detail}", file=sys.stderr)
+            return 2
+
     if args.dry_run:
         for checkpoint in checkpoints:
             output_dir = _output_dir(checkpoint, args.variant, args.output_name)
-            print(f"[WYW Batch] RUN {checkpoint}")
-            print(shlex.join(_command(args, checkpoint, output_dir)))
+            if args.plot_only:
+                _, report_path, baseline_path = plot_jobs[checkpoint]
+                print(f"[WYW Batch] REDRAW {checkpoint}")
+                print(shlex.join(_plot_command(args, report_path, baseline_path)))
+            else:
+                print(f"[WYW Batch] RUN {checkpoint}")
+                print(shlex.join(_command(args, checkpoint, output_dir)))
         return 0
 
     statuses: list[str] = []
 
     for index, checkpoint in enumerate(checkpoints, start=1):
         output_dir = _output_dir(checkpoint, args.variant, args.output_name)
+        if args.plot_only:
+            report_status, report_path, baseline_path = plot_jobs[checkpoint]
+            log_path = output_dir / "batch_redraw.log"
+            command = _plot_command(args, report_path, baseline_path)
+            print(f"[WYW Batch] [{index}/{len(checkpoints)}] REDRAW {checkpoint}")
+            started = time.monotonic()
+            try:
+                returncode = _run_command(command, log_path)
+            except OSError as exc:
+                returncode = None
+                with log_path.open("a", encoding="utf-8") as stream:
+                    stream.write(f"\nlauncher error: {exc}\n")
+            duration = time.monotonic() - started
+            status = report_status if returncode == 0 else "ERROR"
+            print(f"[WYW Batch] [{index}/{len(checkpoints)}] {status} "
+                  f"rc={returncode} duration={duration:.1f}s")
+            statuses.append(status)
+            if status == "ERROR" and args.fail_fast:
+                break
+            continue
+
         existing = _existing_status(output_dir, checkpoint) if args.skip_existing else None
         if existing is not None:
             print(f"[WYW Batch] [{index}/{len(checkpoints)}] {existing} existing {checkpoint}")

@@ -29,6 +29,9 @@ def pyplot():
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    # The installed TTC exposes the family as JP while covering CJK glyphs.
+    plt.rcParams["font.family"] = ["Noto Serif CJK JP", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
 
     return plt
 
@@ -92,7 +95,7 @@ def _format_value(value, unit):
 def _write_overview(output_dir, *, variant, status, comparison, reports):
     plt = pyplot()
     profiles = comparison["profiles"]
-    fig, ax = plt.subplots(figsize=(16, 9), layout="constrained")
+    fig, ax = plt.subplots(figsize=(16, 10), layout="constrained")
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
@@ -135,12 +138,12 @@ def _write_overview(output_dir, *, variant, status, comparison, reports):
                     checks.append((_regression_score(name, metric), item["scenario_id"], name, metric))
     checks.sort(key=lambda entry: entry[0], reverse=True)
 
-    ax.text(0, .43, f"FAILURE EVENTS  {len(failures)}", fontsize=12, weight="bold",
+    ax.text(0, .43, f"FAILURE EVENTS  {len(failures)}", fontsize=14, weight="bold",
             color=FAIL if failures else "#404040")
     failure_lines = [f"{sid}: {reason}" for sid, reason in failures[:6]] or ["None"]
-    ax.text(0, .39, "\n".join(failure_lines), fontsize=10, va="top", linespacing=1.45)
+    ax.text(0, .39, "\n".join(failure_lines), fontsize=11, va="top", linespacing=1.45)
 
-    ax.text(.52, .43, f"FAILED METRIC CHECKS  {len(checks)}", fontsize=12, weight="bold",
+    ax.text(.52, .43, f"FAILED METRIC CHECKS  {len(checks)}", fontsize=14, weight="bold",
             color=FAIL if checks else "#404040")
     regression_lines = []
     for _, scenario_id, name, metric in checks[:7]:
@@ -150,12 +153,165 @@ def _write_overview(output_dir, *, variant, status, comparison, reports):
             f"{_format_value(metric.get('baseline'), unit)} -> "
             f"{_format_value(metric.get('current'), unit)}"
         )
-    ax.text(.52, .39, "\n".join(regression_lines or ["None"]), fontsize=9.5,
+    ax.text(.52, .39, "\n".join(regression_lines or ["None"]), fontsize=10.5,
             va="top", linespacing=1.45)
+    ax.text(0, .17, "READING GUIDE", fontsize=14, weight="bold")
+    ax.text(0, .13,
+            "Gray = baseline median   Blue = current value   Red = failed gate or failed metric\n"
+            "Profile pass counts use the configured scenario threshold; absolute safety gates remain strict.",
+            fontsize=11, va="top", linespacing=1.5, color="#404040")
     ax.text(0, .035,
             "Blue = current pass | red = current fail | gray = baseline. "
             "Open the grouped evidence sheets for scenario-level values and limits.",
             fontsize=10, color="#525252")
+    path = output_dir / "comparison.png"
+    save_figure(fig, path)
+    return path
+
+
+def _write_metric_overview(output_dir, *, variant, status, comparison, reports):
+    """Single compact chart: raw-unit metric panels, speed colors, robust dots."""
+    plt = pyplot()
+    import numpy as np
+
+    metrics = ("vx_rmse_m_s", "yaw_rmse_rad_s", "tilt_peak_deg", "height_rmse_m",
+               "wheel_contact_loss_mean", "wheel_torque_saturation_rate",
+               "leg_action_delta_rms", "wheel_action_delta_rms",
+               "leg_action_second_diff_rms", "wheel_action_second_diff_rms")
+    colors = { -2.0: "#2563eb", -1.0: "#0891b2", -0.5: "#16a34a",
+               0.5: "#ca8a04", 1.0: "#ea580c", 2.0: "#dc2626" }
+    speeds = tuple(colors)
+    contracts = {s.id: s for profile in ("nominal", "robust")
+                 for s in V.build_scenarios(variant, profile)}
+    nominal = comparison["profiles"].get("nominal", {}).get("scenarios", [])
+    robust = comparison["profiles"].get("robust", {}).get("scenarios", [])
+    robust_report = next((r for r in reports if r.get("profile") == "robust"), {})
+    samples = robust_report.get("samples", [])
+    # Keep all ten panels in a dense 5 x 2 matrix.  The previous 4 x 4 grid
+    # left the final row mostly empty, which made the evidence look smaller
+    # than it is and pushed the labels apart.
+    fig = plt.figure(figsize=(16, 8.8))
+    # The header is positioned in figure coordinates, leaving a clean band
+    # above a two-row, five-column panel matrix.
+    grid = fig.add_gridspec(2, 5, left=.035, right=.99, bottom=.08, top=.73,
+                            hspace=.42, wspace=.16)
+    fig.text(.035, .915, "总体结果", fontsize=16, weight="bold", va="top")
+    profile_text = "       ".join(
+        f"{profile.title()}: 通过 {result['passed']}/{result['total']}"
+        for profile, result in comparison["profiles"].items()
+    )
+    safety = "PASS" if comparison.get("safety_pass", True) else "FAIL"
+    fig.text(.035, .875, f"{profile_text}       Safety: {safety}",
+             fontsize=13, weight="bold", color=PASS if safety == "PASS" else FAIL)
+    fig.text(.035, .835, "关键结论：Current 相对 Baseline 的改善/退化",
+             fontsize=11.5, weight="bold")
+    key_names = (("VX RMSE", "vx_rmse_m_s"), ("Yaw RMSE", "yaw_rmse_rad_s"),
+                 ("Tilt Peak", "tilt_peak_deg"), ("Height RMSE", "height_rmse_m"),
+                 ("Wheel Contact", "wheel_contact_loss_mean"),
+                 ("Wheel Torque", "wheel_torque_saturation_rate"),
+                 ("Action Smoothness", "wheel_action_second_diff_rms"))
+    conclusions = []
+    for label, name in key_names:
+        deltas = [float(item["metrics"][name]["delta"]) for result in comparison["profiles"].values()
+                  for item in result["scenarios"] if _valid(item.get("metrics", {}).get(name, {}).get("delta"))]
+        if deltas:
+            delta = float(np.median(deltas))
+            direction = "改善" if (delta <= 0 if name in V.LOWER_IS_BETTER else delta >= 0) else "退化"
+            conclusions.append(f"{label} {'↓' if name in V.LOWER_IS_BETTER else '↑'} {direction} {delta:+.3g}")
+    fig.text(.035, .797, "   |   ".join(conclusions), fontsize=10.5, color="#404040")
+    axes = [fig.add_subplot(grid[row, column]) for row in range(2) for column in range(5)]
+    for index, name in enumerate(metrics):
+        ax = axes[index]
+        title, unit = metric_label(name)
+        factor = 100.0 if unit == "%" else 1.0
+        for profile, entries in (("nominal", nominal), ("robust", robust)):
+            by_speed = {speed: next((item for item in entries
+                                     if item.get("scenario_id") in contracts
+                                     and math.isclose(float(contracts[item["scenario_id"]].vx), speed)
+                                     and math.isclose(float(contracts[item["scenario_id"]].yaw), 0.0)), None)
+                        for speed in speeds}
+            baseline_line, current_line = [], []
+            for speed in speeds:
+                item = by_speed[speed]
+                metric = item.get("metrics", {}).get(name, {}) if item else {}
+                baseline_line.append(float(metric["baseline"]) * factor if _valid(metric.get("baseline")) else np.nan)
+                current_line.append(float(metric["current"]) * factor if _valid(metric.get("current")) else np.nan)
+            if profile == "nominal":
+                # Draw current first, then the darker dashed baseline on top so it
+                # remains visible when the two traces overlap closely.
+                ax.plot(speeds, current_line, "-", color="#111827", lw=1.8, zorder=3)
+                ax.plot(speeds, baseline_line, linestyle=(0, (5, 3)), color="#4b5563",
+                        lw=2.2, zorder=5)
+                for speed, base, current in zip(speeds, baseline_line, current_line):
+                    if np.isfinite(base):
+                        ax.scatter(speed, base, facecolors="white", edgecolors="#374151",
+                                   linewidths=1.4, s=48, zorder=7)
+                    if np.isfinite(current):
+                        ax.scatter(speed, current, color=colors[speed], s=38, zorder=5)
+            else:
+                # Robust environments are shown as same-color sample clouds.
+                for speed in speeds:
+                    scenario_ids = {item["scenario_id"] for item in robust
+                                    if item.get("scenario_id") in contracts
+                                    and math.isclose(float(contracts[item["scenario_id"]].vx), speed)
+                                    and math.isclose(float(contracts[item["scenario_id"]].yaw), 0.0)}
+                    values = [float(sample[name]) * factor for sample in samples
+                              if sample.get("scenario_id") in scenario_ids and _valid(sample.get(name))]
+                    if values:
+                        jitter = np.linspace(-.055, .055, len(values))
+                        ax.scatter(np.full(len(values), speed) + jitter, values, color=colors[speed],
+                                   alpha=.32, s=18, zorder=1)
+                        ax.scatter(speed, float(np.median(values)), color=colors[speed],
+                                   marker="D", s=34, zorder=6)
+        # Overall point uses the aggregate of displayed nominal scenario points.
+        overall_x = 2.7
+        all_current = [float(item.get("metrics", {}).get(name, {}).get("current")) * factor for item in nominal
+                       if _valid(item.get("metrics", {}).get(name, {}).get("current"))]
+        all_baseline = [float(item.get("metrics", {}).get(name, {}).get("baseline")) * factor for item in nominal
+                        if _valid(item.get("metrics", {}).get(name, {}).get("baseline"))]
+        if all_baseline:
+            ax.scatter(overall_x, float(np.median(all_baseline)), facecolors="white",
+                       edgecolors="#737373", s=54, zorder=4)
+        if all_current:
+            ax.scatter(overall_x, float(np.median(all_current)), color="#111827", s=48, zorder=5)
+        # Use a compact title from the metric contract.  Keeping the unit on
+        # the second line guarantees that every panel title is at most two
+        # lines, including the long contact/action metrics.
+        compact_titles = {
+            "wheel_contact_loss_mean": "Missing Wheel Contacts",
+            "wheel_torque_saturation_rate": "Torque Saturation",
+            "leg_action_delta_rms": "Leg Action Delta",
+            "wheel_action_delta_rms": "Wheel Action Delta",
+            "leg_action_second_diff_rms": "Leg 2nd Diff RMS",
+            "wheel_action_second_diff_rms": "Wheel 2nd Diff RMS",
+        }
+        panel_title = compact_titles.get(name, title)
+        ax.set_title(f"{panel_title}\n[{unit or 'value'}]", fontsize=12,
+                     weight="bold", loc="left", pad=4)
+        ax.set_xticks((*speeds, overall_x), (*[f"{s:+g}" for s in speeds], "Overall"), rotation=45, fontsize=9)
+        if index >= 5:
+            ax.set_xlabel("Commanded VX (m/s)", fontsize=9, labelpad=3)
+        ax.grid(axis="y", alpha=.2)
+        ax.tick_params(axis="y", labelsize=9)
+        ax.spines[["top", "right"]].set_visible(False)
+    for ax in axes[len(metrics):]:
+        ax.axis("off")
+    from matplotlib.lines import Line2D
+    legend = [Line2D([0], [0], color=colors[speed], marker="o", ls="None",
+                     label=f"VX {speed:+g}") for speed in speeds]
+    legend += [Line2D([0], [0], color="#4b5563", linestyle=(0, (5, 3)), lw=2.2,
+                      label="Baseline trend"),
+              Line2D([0], [0], color="#111827", ls="-", label="Current trend"),
+              Line2D([0], [0], marker="o", color="none", markerfacecolor="white",
+                     markeredgecolor="#111827", label="Nominal baseline"),
+              Line2D([0], [0], marker="o", color="#111827", label="Nominal current"),
+              Line2D([0], [0], marker=".", color="#60a5fa", alpha=.5, ls="None", label="Robust samples"),
+              Line2D([0], [0], marker="D", color="#111827", ls="None", label="Robust median")]
+    fig.legend(handles=legend, loc="upper center", bbox_to_anchor=(.5, .945),
+               ncol=12, frameon=False, fontsize=8.0, columnspacing=.9,
+               handletextpad=.45)
+    fig.suptitle(f"WYW {variant.upper()} | {status} | Raw-unit metric comparison",
+                 fontsize=20, weight="bold", x=.01, ha="left", y=.985)
     path = output_dir / "comparison.png"
     save_figure(fig, path)
     return path
@@ -284,30 +440,117 @@ def _write_robust_distributions(output_dir, *, variant, reports, baseline, names
 
 
 def write_charts(output_dir, *, variant, status, comparison, reports, baseline):
-    """Write a compact overview plus grouped evidence with separate physical axes."""
+    """Write one readable overview image; video telemetry remains separate."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    for stale in output_dir.glob("*.png"):
+        if stale.name != "comparison.png":
+            stale.unlink()
+    stale_index = output_dir / "charts.md"
+    if stale_index.is_file():
+        stale_index.unlink()
     profiles = comparison["profiles"]
-    paths = [_write_overview(output_dir, variant=variant, status=status,
-                             comparison=comparison, reports=reports)]
-    names = sorted({name for profile in profiles.values() for item in profile["scenarios"]
-                    for name in item["metrics"]})
-    for group, group_names in _metric_groups(names):
-        for profile, result in profiles.items():
-            paths.append(_write_metric_sheet(output_dir, variant=variant, profile=profile,
-                                              group=group, names=group_names, result=result))
-    robust_path = _write_robust_distributions(output_dir, variant=variant, reports=reports,
-                                               baseline=baseline, names=names)
-    if robust_path is not None:
-        paths.append(robust_path)
-    (output_dir / "charts.md").write_text(
-        "# WYW Verification Charts\n\n" + "\n".join(
-            f"- [{path.stem}]({path.name})" for path in paths) + "\n", encoding="utf-8")
-    return paths
+    return [_write_metric_overview(output_dir, variant=variant, status=status,
+                                   comparison=comparison, reports=reports)]
 
 
 def load_trace(path):
     return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _validate_plot_comparison(report):
+    comparison = report["evaluation"]
+    if not isinstance(comparison, dict) or not isinstance(comparison.get("profiles"), dict):
+        raise ValueError("evaluation report is missing comparison profiles")
+    required_metrics = V.required_metrics(report["variant"])
+    for profile in ("nominal", "robust"):
+        result = comparison["profiles"].get(profile)
+        if not isinstance(result, dict):
+            raise ValueError(f"evaluation comparison is missing profile: {profile}")
+        if not isinstance(result.get("passed"), int) or not isinstance(result.get("total"), int):
+            raise ValueError(f"evaluation comparison has invalid pass counts: {profile}")
+        scenarios = result.get("scenarios")
+        if not isinstance(scenarios, list):
+            raise ValueError(f"evaluation comparison is missing scenarios: {profile}")
+        expected_ids = [scenario.id for scenario in V.build_scenarios(report["variant"], profile)]
+        if [scenario.get("scenario_id") for scenario in scenarios] != expected_ids:
+            raise ValueError(f"evaluation comparison scenario coverage/order mismatch: {profile}")
+        for scenario in scenarios:
+            metrics = scenario.get("metrics")
+            if not isinstance(metrics, dict):
+                raise ValueError(
+                    f"evaluation comparison is missing metrics: {scenario.get('scenario_id')}"
+                )
+            missing = required_metrics - set(metrics)
+            if missing:
+                raise ValueError(
+                    f"evaluation comparison is missing metrics for {scenario['scenario_id']}: "
+                    f"{sorted(missing)}"
+                )
+            for name in required_metrics:
+                if not {"baseline", "current", "delta", "pass"} <= set(metrics[name]):
+                    raise ValueError(
+                        f"evaluation comparison metric is incomplete: "
+                        f"{scenario['scenario_id']}/{name}"
+                    )
+
+
+def load_plot_inputs(
+    report_path, baseline_path=None, *, expected_checkpoint=None, expected_variant=None
+):
+    """Load and validate a complete sampled evaluation before drawing anything."""
+    report_path = Path(report_path).resolve()
+    if not report_path.is_file():
+        raise ValueError(f"evaluation report does not exist: {report_path}")
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read evaluation report: {report_path}") from exc
+    V.validate_final_report(report)
+    if report["mode"] != "evaluate":
+        raise ValueError("plot-only input must be an evaluate report")
+    _validate_plot_comparison(report)
+    if expected_variant is not None and report["variant"] != expected_variant:
+        raise ValueError(
+            f"report variant is {report['variant']!r}, expected {expected_variant!r}"
+        )
+    if expected_checkpoint is not None:
+        recorded = Path(report["checkpoint"]).resolve()
+        if recorded != Path(expected_checkpoint).resolve():
+            raise ValueError(
+                f"report checkpoint is {recorded}, expected {Path(expected_checkpoint).resolve()}"
+            )
+
+    required_metrics = V.required_metrics(report["variant"])
+    for run in report["runs"]:
+        for index, sample in enumerate(run["samples"]):
+            missing = required_metrics - set(sample)
+            if missing:
+                raise ValueError(
+                    f"{run['profile']} sample {index} is missing plotting metrics: {sorted(missing)}"
+                )
+
+    if baseline_path is None:
+        baseline_ref = report.get("baseline")
+        if not isinstance(baseline_ref, dict) or not baseline_ref.get("package"):
+            raise ValueError("evaluation report does not reference a baseline package")
+        baseline_path = Path(baseline_ref["package"])
+        if not baseline_path.is_absolute():
+            baseline_path = report_path.parent / baseline_path
+    baseline_path = Path(baseline_path).resolve()
+    if not baseline_path.is_file():
+        raise ValueError(f"baseline package does not exist: {baseline_path}")
+    try:
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read baseline package: {baseline_path}") from exc
+    V.validate_baseline_package(baseline)
+    if baseline["variant"] != report["variant"]:
+        raise ValueError("baseline package variant does not match evaluation report")
+    recorded_baseline = report.get("baseline", {}).get("checkpoint")
+    if recorded_baseline is not None and baseline["checkpoint"] != recorded_baseline:
+        raise ValueError("baseline package checkpoint does not match evaluation report")
+    return report, baseline, baseline_path
 
 
 def match_frames(baseline, current):
@@ -461,9 +704,7 @@ def main():
     parser.add_argument("--baseline", type=Path, default=None)
     parser.add_argument("--video", action="store_true")
     args = parser.parse_args()
-    report = json.loads(args.report.read_text(encoding="utf-8"))
-    baseline_path = args.baseline or Path(report["baseline"]["package"])
-    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    report, baseline, baseline_path = load_plot_inputs(args.report, args.baseline)
     output_dir = args.report.resolve().parent
     paths = write_charts(output_dir, variant=report["variant"], status=report["status"],
                          comparison=report["evaluation"], reports=report["runs"], baseline=baseline)

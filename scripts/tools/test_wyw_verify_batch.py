@@ -95,3 +95,62 @@ def test_batch_controlled_arguments_cannot_be_overridden_after_separator(tmp_pat
         assert "--profile" in str(exc)
     else:
         raise AssertionError("expected conflicting child argument to be rejected")
+
+
+def test_plot_only_dry_run_uses_presentation_without_baseline_config(
+    tmp_path, capsys, monkeypatch
+):
+    run = _run(tmp_path, "flat_run")
+    checkpoint = run / "model_4999.pt"
+    checkpoint.touch()
+    baseline = tmp_path / "baseline.json"
+
+    monkeypatch.setattr(
+        B.P,
+        "load_plot_inputs",
+        lambda *args, **kwargs: ({"status": "PASS"}, {}, baseline),
+    )
+    result = B.main([
+        "--logs-root", str(tmp_path),
+        "--iteration", "4999",
+        "--python", str(Path(B.sys.executable)),
+        "--plot-only",
+        "--dry-run",
+    ])
+
+    output = capsys.readouterr().out
+    assert result == 0
+    assert "REDRAW" in output
+    assert str(B.PRESENTATION_SCRIPT) in output
+    assert str(B.VERIFY_SCRIPT) not in output
+    assert "--baseline" in output
+
+
+def test_plot_only_validates_every_report_before_redrawing(
+    tmp_path, capsys, monkeypatch
+):
+    first = _run(tmp_path, "first")
+    second = _run(tmp_path, "second")
+    for run in (first, second):
+        (run / "model_10.pt").touch()
+
+    def load_plot_inputs(report_path, **kwargs):
+        if "second" in str(report_path):
+            raise ValueError("robust samples are missing")
+        return {"status": "PASS"}, {}, tmp_path / "baseline.json"
+
+    executed = []
+    monkeypatch.setattr(B.P, "load_plot_inputs", load_plot_inputs)
+    monkeypatch.setattr(B, "_run_command", lambda *args: executed.append(args) or 0)
+    result = B.main([
+        "--logs-root", str(tmp_path),
+        "--iteration", "10",
+        "--python", str(Path(B.sys.executable)),
+        "--plot-only",
+    ])
+
+    captured = capsys.readouterr()
+    assert result == 2
+    assert not executed
+    assert "nothing was redrawn" in captured.err
+    assert "robust samples are missing" in captured.err
